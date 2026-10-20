@@ -66,6 +66,8 @@ const fn fourcc(code: &[u8; 4]) -> u32 {
 
 const DRM_FORMAT_R8: u32 = fourcc(b"R8  ");
 const DRM_FORMAT_R16: u32 = fourcc(b"R16 ");
+const DRM_FORMAT_GR88: u32 = fourcc(b"GR88");
+const DRM_FORMAT_GR1616: u32 = fourcc(b"GR32");
 const DRM_FORMAT_NV12: u32 = fourcc(b"NV12");
 const DRM_FORMAT_P010: u32 = fourcc(b"P010");
 
@@ -276,6 +278,15 @@ fn dmabuf_from_descriptor(
         (2, Some(DRM_FORMAT_R16)) => DRM_FORMAT_P010,
         (count, format) => bail!("Unsupported dma-buf layout: {count} layers, format {format:?}"),
     };
+    // The renderer samples luma and chroma as separate single and two channel images
+    let mut plane_formats = [0; MAX_DMABUF_PLANES];
+    match drm_format {
+        DRM_FORMAT_NV12 => plane_formats[..2].copy_from_slice(&[DRM_FORMAT_R8, DRM_FORMAT_GR88]),
+        DRM_FORMAT_P010 => {
+            plane_formats[..2].copy_from_slice(&[DRM_FORMAT_R16, DRM_FORMAT_GR1616])
+        }
+        format => bail!("Unsupported decoded frame format {format:#x}, expected NV12 or P010"),
+    }
 
     let mut planes = [DmabufPlane::default(); MAX_DMABUF_PLANES];
     let mut plane_count = 0;
@@ -314,6 +325,7 @@ fn dmabuf_from_descriptor(
         drm_format,
         plane_count,
         planes,
+        plane_formats,
         color_space,
         full_range: frame.color_range == ff::AVColorRange::AVCOL_RANGE_JPEG,
     })

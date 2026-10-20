@@ -68,6 +68,8 @@ pub struct DmabufFrame {
     pub drm_format: u32,
     pub plane_count: usize,
     pub planes: [DmabufPlane; MAX_DMABUF_PLANES],
+    /// DRM fourcc of each plane viewed on its own, for example R8 and GR88 for NV12
+    pub plane_formats: [u32; MAX_DMABUF_PLANES],
     pub color_space: YuvColorSpace,
     pub full_range: bool,
 }
@@ -430,66 +432,50 @@ impl GraphicsContext {
         )
     }
 
-    // On Linux `buffer` points to a DmabufFrame
+    /// Imports one plane of a dma-buf frame as a single-channel or two-channel image (R8/GR88 or
+    /// R16/GR1616). wgpu creates a desktop GL context on Linux, which cannot sample multi-planar
+    /// external images, so the planes are sampled as plain 2D textures and converted in the
+    /// shader.
     #[cfg(target_os = "linux")]
-    unsafe fn create_image_from_buffer(&self, buffer: *const c_void) -> egl::EGLImage {
+    unsafe fn create_plane_image(&self, frame: &DmabufFrame, plane_idx: usize) -> egl::EGLImage {
         const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
         const EGL_LINUX_DRM_FOURCC_EXT: i32 = 0x3271;
-        const EGL_YUV_COLOR_SPACE_HINT_EXT: i32 = 0x327B;
-        const EGL_SAMPLE_RANGE_HINT_EXT: i32 = 0x327C;
-        const EGL_ITU_REC601_EXT: i32 = 0x327F;
-        const EGL_ITU_REC709_EXT: i32 = 0x3280;
-        const EGL_ITU_REC2020_EXT: i32 = 0x3281;
-        const EGL_YUV_FULL_RANGE_EXT: i32 = 0x3282;
-        const EGL_YUV_NARROW_RANGE_EXT: i32 = 0x3283;
-        // (fd, offset, pitch, modifier lo, modifier hi) for each plane
-        const PLANE_ATTRIBS: [[i32; 5]; MAX_DMABUF_PLANES] = [
-            [0x3272, 0x3273, 0x3274, 0x3443, 0x3444],
-            [0x3275, 0x3276, 0x3277, 0x3445, 0x3446],
-            [0x3278, 0x3279, 0x327A, 0x3447, 0x3448],
-            [0x3440, 0x3441, 0x3442, 0x3449, 0x344A],
-        ];
+        const EGL_DMA_BUF_PLANE0_FD_EXT: i32 = 0x3272;
+        const EGL_DMA_BUF_PLANE0_OFFSET_EXT: i32 = 0x3273;
+        const EGL_DMA_BUF_PLANE0_PITCH_EXT: i32 = 0x3274;
+        const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: i32 = 0x3443;
+        const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: i32 = 0x3444;
         const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
-        let frame = &*(buffer as *const DmabufFrame);
+        let plane = &frame.planes[plane_idx];
+        // Chroma is subsampled 2x2 in both NV12 and P010
+        let (width, height) = if plane_idx == 0 {
+            (frame.width, frame.height)
+        } else {
+            (frame.width.div_ceil(2), frame.height.div_ceil(2))
+        };
 
         let mut attribs = vec![
             egl::WIDTH,
-            frame.width as i32,
+            width as i32,
             egl::HEIGHT,
-            frame.height as i32,
+            height as i32,
             EGL_LINUX_DRM_FOURCC_EXT,
-            frame.drm_format as i32,
-            EGL_YUV_COLOR_SPACE_HINT_EXT,
-            match frame.color_space {
-                YuvColorSpace::Bt601 => EGL_ITU_REC601_EXT,
-                YuvColorSpace::Bt709 => EGL_ITU_REC709_EXT,
-                YuvColorSpace::Bt2020 => EGL_ITU_REC2020_EXT,
-            },
-            EGL_SAMPLE_RANGE_HINT_EXT,
-            if frame.full_range {
-                EGL_YUV_FULL_RANGE_EXT
-            } else {
-                EGL_YUV_NARROW_RANGE_EXT
-            },
+            frame.plane_formats[plane_idx] as i32,
+            EGL_DMA_BUF_PLANE0_FD_EXT,
+            plane.fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+            plane.offset as i32,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT,
+            plane.pitch as i32,
         ];
-        for (plane, names) in frame.planes[..frame.plane_count].iter().zip(PLANE_ATTRIBS) {
+        if plane.modifier != DRM_FORMAT_MOD_INVALID {
             attribs.extend([
-                names[0],
-                plane.fd,
-                names[1],
-                plane.offset as i32,
-                names[2],
-                plane.pitch as i32,
+                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                plane.modifier as u32 as i32,
+                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                (plane.modifier >> 32) as u32 as i32,
             ]);
-            if plane.modifier != DRM_FORMAT_MOD_INVALID {
-                attribs.extend([
-                    names[3],
-                    plane.modifier as u32 as i32,
-                    names[4],
-                    (plane.modifier >> 32) as u32 as i32,
-                ]);
-            }
         }
         attribs.push(egl::NONE);
 
@@ -502,9 +488,62 @@ impl GraphicsContext {
         )
     }
 
+    /// Binds the luma and chroma planes of `frame` to `textures` (as GL_TEXTURE_2D on texture
+    /// units 0 and 1) for the duration of `render_cb`.
+    ///
     /// # Safety
-    /// `buffer` must be a valid AHardwareBuffer (a DmabufFrame on Linux).
+    /// `frame` must describe valid dma-bufs and `textures` must be valid GL textures.
+    #[cfg(target_os = "linux")]
+    pub unsafe fn render_dmabuf_using_textures(
+        &self,
+        frame: &DmabufFrame,
+        textures: [gl::Texture; 2],
+        render_cb: impl FnOnce(),
+    ) {
+        if frame.plane_count < 2 {
+            alvr_common::error!("Expected 2 planes in decoded frame, got {}", frame.plane_count);
+            return;
+        }
+
+        // Errors left by other GL users of this context (wgpu, the OpenXR runtime) are not ours
+        while self.gl_context.get_error() != gl::NO_ERROR {}
+
+        let mut images = vec![];
+        for (idx, texture) in textures.iter().enumerate() {
+            let image = self.create_plane_image(frame, idx);
+            if image.is_null() {
+                alvr_common::error!(
+                    "eglCreateImageKHR failed for plane {idx} (format {:#x}, modifier {:#x})",
+                    frame.plane_formats[idx],
+                    frame.planes[idx].modifier
+                );
+                for image in images {
+                    (self.destroy_image)(self.egl_display.as_ptr(), image);
+                }
+                return;
+            }
+
+            self.gl_context.active_texture(gl::TEXTURE0 + idx as u32);
+            self.gl_context.bind_texture(gl::TEXTURE_2D, Some(*texture));
+            (self.image_target_texture_2d)(gl::TEXTURE_2D, image);
+            check_error(&self.gl_context, "image_target_texture_2d");
+
+            images.push(image);
+        }
+
+        render_cb();
+
+        for image in images {
+            (self.destroy_image)(self.egl_display.as_ptr(), image);
+        }
+        self.gl_context.active_texture(gl::TEXTURE0);
+        check_error(&self.gl_context, "destroy_image");
+    }
+
+    /// # Safety
+    /// `buffer` must be a valid AHardwareBuffer.
     /// `texture` must be a valid GL texture.
+    #[cfg(not(target_os = "linux"))]
     pub unsafe fn render_ahardwarebuffer_using_texture(
         &self,
         buffer: *const c_void,
