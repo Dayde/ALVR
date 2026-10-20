@@ -32,3 +32,8 @@ strip = false
 [profile.distribution]
 inherits = "release"
 lto = true
+
+# libspa-sys 0.8.0 with bindgen 0.72: bindgen 0.69 generates broken bindings against
+# PipeWire 1.6 with recent clang
+[patch.crates-io]
+libspa-sys = { path = "vendor/libspa-sys-0.8.0" }
