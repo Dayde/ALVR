@@ -559,6 +559,9 @@ fn stream_input_loop(
     let mut last_palm_poses = [Pose::default(); 2];
     let mut last_view_params = [ViewParams::default(); 2];
 
+    #[cfg(not(target_os = "android"))]
+    let mut input_stats = InputStats::new();
+
     let mut deadline = Instant::now();
     let frame_interval = Duration::from_secs_f32(1.0 / refresh_rate);
     while running.value() {
@@ -620,6 +623,15 @@ fn stream_input_loop(
             &mut last_palm_poses[1],
         );
 
+        // Monado reports a hand skeleton derived from Index controllers ("conforming" hand
+        // tracking) whenever they are held, which would hide the controllers below. On desktop a
+        // tracked controller wins; the streamer derives finger poses from its buttons.
+        #[cfg(not(target_os = "android"))]
+        let (left_hand_skeleton, right_hand_skeleton) = (
+            left_hand_skeleton.filter(|_| left_hand_motion.is_none()),
+            right_hand_skeleton.filter(|_| right_hand_motion.is_none()),
+        );
+
         // Note: When multimodal input is enabled, we are sure that when free hands are used
         // (not holding controllers) the controller data is None.
         if int_ctx.multimodal_hands_enabled || left_hand_skeleton.is_none() {
@@ -668,6 +680,20 @@ fn stream_input_loop(
             device_motions.append(&mut interaction::get_bd_motion_trackers(now, tracker));
         }
 
+        #[cfg(not(target_os = "android"))]
+        {
+            input_stats.polls += 1;
+            for (id, _) in &device_motions {
+                if *id == *HAND_LEFT_ID {
+                    input_stats.left_controller += 1;
+                } else if *id == *HAND_RIGHT_ID {
+                    input_stats.right_controller += 1;
+                }
+            }
+            input_stats.left_skeleton += u32::from(left_hand_skeleton.is_some());
+            input_stats.right_skeleton += u32::from(right_hand_skeleton.is_some());
+        }
+
         core_ctx.send_tracking(
             Duration::from_nanos(now.as_nanos() as u64),
             device_motions,
@@ -676,11 +702,58 @@ fn stream_input_loop(
         );
 
         let button_entries = interaction::update_buttons(&xr_session, &int_ctx.button_actions);
+
+        #[cfg(not(target_os = "android"))]
+        {
+            input_stats.buttons += button_entries.len() as u32;
+            if input_stats.start.elapsed() >= Duration::from_secs(5) {
+                let s = &input_stats;
+                eprintln!(
+                    "Input: {} polls, controller poses sent L {} R {}, hand skeletons sent L {} R {}, \
+                    {} button changes",
+                    s.polls,
+                    s.left_controller,
+                    s.right_controller,
+                    s.left_skeleton,
+                    s.right_skeleton,
+                    s.buttons,
+                );
+                input_stats = InputStats::new();
+            }
+        }
+
         if !button_entries.is_empty() {
             core_ctx.send_buttons(button_entries);
         }
 
         deadline += frame_interval / 3;
         thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    }
+}
+
+// What the input thread sent to the streamer, printed periodically on desktop
+#[cfg(not(target_os = "android"))]
+struct InputStats {
+    start: Instant,
+    polls: u32,
+    left_controller: u32,
+    right_controller: u32,
+    left_skeleton: u32,
+    right_skeleton: u32,
+    buttons: u32,
+}
+
+#[cfg(not(target_os = "android"))]
+impl InputStats {
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            polls: 0,
+            left_controller: 0,
+            right_controller: 0,
+            left_skeleton: 0,
+            right_skeleton: 0,
+            buttons: 0,
+        }
     }
 }
