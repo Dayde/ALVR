@@ -196,6 +196,13 @@ impl StreamContext {
             ),
         ];
 
+        // The previous stream's decoder sink stays installed across reconnections and keeps
+        // accepting frames, so no IDR (and no DecoderConfig resend) would ever be requested for this
+        // stream. Replace it with one that rejects frames: this drops the old decoder and asks the
+        // streamer for a fresh decoder config. MediaCodec sinks fail on their own once stopped.
+        #[cfg(not(target_os = "android"))]
+        core_ctx.set_decoder_input_callback(Box::new(|_, _| false));
+
         let renderer = StreamRenderer::new(
             gfx_ctx,
             config.view_resolution,
