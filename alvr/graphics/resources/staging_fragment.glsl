@@ -1,6 +1,9 @@
 #version 300 es
 #extension GL_OES_EGL_image_external_essl3 : enable
 
+// Required by Mesa GLES drivers, and highp keeps texture coordinates exact at 2K+ per eye
+precision highp float;
+
 uniform samplerExternalOES tex;
 
 // Convert from limited colors to full
