@@ -53,6 +53,17 @@ pub struct ParsedStreamConfig {
 
 impl ParsedStreamConfig {
     pub fn new(config: &StreamConfig) -> Self {
+        let negotiated = &config.negotiated_config;
+        eprintln!(
+            "Stream config: {}x{} per eye, {} Hz, foveated encoding: {}, full range: {}, HDR: {}",
+            negotiated.view_resolution.x,
+            negotiated.view_resolution.y,
+            negotiated.refresh_rate_hint,
+            negotiated.enable_foveated_encoding,
+            negotiated.use_full_range,
+            negotiated.enable_hdr,
+        );
+
         Self {
             view_resolution: config.negotiated_config.view_resolution,
             refresh_rate_hint: config.negotiated_config.refresh_rate_hint,

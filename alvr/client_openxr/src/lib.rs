@@ -452,6 +452,7 @@ pub fn entry_point() {
                             .unwrap();
                     }
                     ClientCoreEvent::DecoderConfig { codec, config_nal } => {
+                        eprintln!("Decoder config: {codec:?}, {} bytes", config_nal.len());
                         if let Some(stream) = &mut stream_context {
                             stream.maybe_initialize_decoder(codec, config_nal);
                         }

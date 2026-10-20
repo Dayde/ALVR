@@ -4,7 +4,7 @@
 use super::VideoDecoderConfig;
 use alvr_common::{
     anyhow::{anyhow, bail, Result},
-    error, info,
+    error,
     parking_lot::Mutex,
     warn,
 };
@@ -182,7 +182,8 @@ impl Decoder {
 
             let packet = ff::av_packet_alloc();
 
-            info!(
+            // Printed directly: once connected, info logs are filtered by the streamer settings
+            eprintln!(
                 "Opened VAAPI decoder for {:?} on {device_path}",
                 config.codec
             );
