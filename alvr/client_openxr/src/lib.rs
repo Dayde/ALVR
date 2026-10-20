@@ -126,10 +126,15 @@ fn create_session(
     xr::FrameWaiter,
     xr::FrameStream<xr::OpenGlEs>,
 ) {
+    #[cfg(target_os = "android")]
     unsafe {
         xr_instance
             .create_session(xr_system, &graphics::session_create_info(graphics_context))
             .unwrap()
+    }
+    #[cfg(not(target_os = "android"))]
+    unsafe {
+        graphics::create_egl_session(xr_instance, xr_system, graphics_context)
     }
 }
 
@@ -149,9 +154,12 @@ pub fn entry_point() {
         Platform::Lynx => "_lynx",
         _ => "",
     };
-    let xr_entry = unsafe {
-        xr::Entry::load_from(Path::new(&format!("libopenxr_loader{loader_suffix}.so"))).unwrap()
-    };
+    #[cfg(target_os = "android")]
+    let loader_name = format!("libopenxr_loader{loader_suffix}.so");
+    // On desktop Linux the loader comes from the system "openxr" package
+    #[cfg(not(target_os = "android"))]
+    let loader_name = format!("libopenxr_loader{loader_suffix}.so.1");
+    let xr_entry = unsafe { xr::Entry::load_from(Path::new(&loader_name)).unwrap() };
 
     #[cfg(target_os = "android")]
     xr_entry.initialize_android_loader().unwrap();
@@ -184,6 +192,12 @@ pub fn entry_point() {
     #[cfg(target_os = "android")]
     {
         exts.khr_android_create_instance = true;
+    }
+    // Desktop runtimes (Monado) take the EGL context through XR_MNDX_egl_enable
+    #[cfg(not(target_os = "android"))]
+    {
+        assert!(available_extensions.mndx_egl_enable);
+        exts.mndx_egl_enable = true;
     }
     exts.khr_convert_timespec_time = true;
     exts.khr_opengl_es_enable = true;
@@ -269,7 +283,7 @@ pub fn entry_point() {
             encoder_10_bits: platform != Platform::Unknown,
             encoder_av1: matches!(
                 platform,
-                Platform::Quest3 | Platform::Quest3S | Platform::Pico4Ultra
+                Platform::Quest3 | Platform::Quest3S | Platform::Pico4Ultra | Platform::LinuxPc
             ),
             prefer_10bit: false,
             prefer_full_range: true,

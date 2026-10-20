@@ -199,7 +199,9 @@ impl StreamContext {
             format,
             config.foveated_encoding_config.clone(),
             platform != Platform::Lynx && !((platform.is_pico()) && config.enable_hdr),
-            config.use_full_range && !config.enable_hdr, // TODO: figure out why HDR doesn't need the limited range hackfix in staging?
+            // TODO: figure out why HDR doesn't need the limited range hackfix in staging?
+            // On Linux the dma-buf import is told the real range, so no fix is needed
+            config.use_full_range && !config.enable_hdr && cfg!(not(target_os = "linux")),
             config.encoding_gamma,
             config.upscaling.clone(),
         );
