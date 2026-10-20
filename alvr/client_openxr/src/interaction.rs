@@ -207,8 +207,17 @@ impl InteractionContext {
             p if p.is_pico() => PICO4S_CONTROLLER_PROFILE_PATH,
             p if p.is_vive() => FOCUS3_CONTROLLER_PROFILE_PATH,
             p if p.is_yvr() => YVR_CONTROLLER_PROFILE_PATH,
+            // Desktop Linux runs on Monado with Lighthouse controllers. ALVR_CONTROLLER_PROFILE=vive
+            // selects Vive wands instead of Index controllers.
+            Platform::LinuxPc => match std::env::var("ALVR_CONTROLLER_PROFILE").as_deref() {
+                Ok("vive") => VIVE_CONTROLLER_PROFILE_PATH,
+                Ok("quest") => QUEST_CONTROLLER_PROFILE_PATH,
+                _ => INDEX_CONTROLLER_PROFILE_PATH,
+            },
             _ => QUEST_CONTROLLER_PROFILE_PATH,
         };
+        #[cfg(not(target_os = "android"))]
+        eprintln!("Controller interaction profile: {controllers_profile_path}");
         let controllers_profile_id = alvr_common::hash_string(controllers_profile_path);
 
         // Create actions:
