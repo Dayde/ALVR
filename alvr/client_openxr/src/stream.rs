@@ -26,12 +26,19 @@ use openxr as xr;
 use std::{
     ptr,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 const DECODER_MAX_TIMEOUT_MULTIPLIER: f32 = 0.8;
+
+// Read and reset by the frame loop stats
+pub static FRAME_POLL_NANOS: AtomicU64 = AtomicU64::new(0);
+pub static FRAMES_WITHOUT_NEW_IMAGE: AtomicU64 = AtomicU64::new(0);
 
 pub struct ParsedStreamConfig {
     pub view_resolution: UVec2,
@@ -358,11 +365,16 @@ impl StreamContext {
                 frame_interval.as_secs_f32() * DECODER_MAX_TIMEOUT_MULTIPLIER,
             );
         let mut frame_result = None;
+        let poll_start = Instant::now();
         if let Some((_, source)) = &mut self.decoder {
             while frame_result.is_none() && Instant::now() < frame_poll_deadline {
                 frame_result = source.get_frame();
                 thread::sleep(Duration::from_micros(500));
             }
+        }
+        FRAME_POLL_NANOS.fetch_add(poll_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if frame_result.is_none() {
+            FRAMES_WITHOUT_NEW_IMAGE.fetch_add(1, Ordering::Relaxed);
         }
 
         let (timestamp, view_params, buffer_ptr) =

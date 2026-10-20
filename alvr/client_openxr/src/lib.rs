@@ -327,6 +327,9 @@ pub fn entry_point() {
         let mut stream_context = None::<StreamContext>;
         let mut passthrough_layer = None;
 
+        #[cfg(not(target_os = "android"))]
+        let mut frame_stats = FrameLoopStats::new();
+
         let mut event_storage = xr::EventDataBuffer::new();
         'render_loop: loop {
             while let Some(event) = xr_instance.poll_event(&mut event_storage).unwrap() {
@@ -471,6 +474,8 @@ pub fn entry_point() {
                 }
             }
 
+            #[cfg(not(target_os = "android"))]
+            let wait_start = std::time::Instant::now();
             let frame_state = match xr_frame_waiter.wait() {
                 Ok(state) => state,
                 Err(e) => {
@@ -482,6 +487,13 @@ pub fn entry_point() {
                 Duration::from_nanos(frame_state.predicted_display_period.as_nanos() as _);
             let vsync_time =
                 Duration::from_nanos(frame_state.predicted_display_time.as_nanos() as _);
+            #[cfg(not(target_os = "android"))]
+            {
+                frame_stats.waits += 1;
+                frame_stats.wait_time += wait_start.elapsed();
+                frame_stats.skipped += u32::from(!frame_state.should_render);
+                frame_stats.period = frame_interval;
+            }
 
             xr_frame_stream.begin().unwrap();
 
@@ -497,11 +509,18 @@ pub fn entry_point() {
                 continue;
             }
 
+            #[cfg(not(target_os = "android"))]
+            let render_start = std::time::Instant::now();
             // todo: allow rendering lobby and stream layers at the same time and add cross fade
             let (layer, display_time) = if let Some(stream) = &mut stream_context {
                 stream.render(frame_interval, vsync_time)
             } else {
                 (lobby.render(vsync_time), vsync_time)
+            };
+            #[cfg(not(target_os = "android"))]
+            let end_start = {
+                frame_stats.render_time += render_start.elapsed();
+                std::time::Instant::now()
             };
 
             let layers: &[&xr::CompositionLayerBase<_>] =
@@ -517,6 +536,12 @@ pub fn entry_point() {
                 xr::EnvironmentBlendMode::OPAQUE,
                 layers,
             );
+
+            #[cfg(not(target_os = "android"))]
+            {
+                frame_stats.end_time += end_start.elapsed();
+                frame_stats.maybe_print();
+            }
 
             if let Err(e) = res {
                 let time = to_xr_time(display_time);
@@ -536,6 +561,62 @@ pub fn entry_point() {
     }
 
     // grapics_context is dropped here
+}
+
+// Frame loop timings, printed periodically on desktop to see where frame time goes
+#[cfg(not(target_os = "android"))]
+struct FrameLoopStats {
+    start: std::time::Instant,
+    waits: u32,
+    skipped: u32,
+    period: Duration,
+    wait_time: Duration,
+    render_time: Duration,
+    end_time: Duration,
+}
+
+#[cfg(not(target_os = "android"))]
+impl FrameLoopStats {
+    fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            waits: 0,
+            skipped: 0,
+            period: Duration::ZERO,
+            wait_time: Duration::ZERO,
+            render_time: Duration::ZERO,
+            end_time: Duration::ZERO,
+        }
+    }
+
+    fn maybe_print(&mut self) {
+        let elapsed = self.start.elapsed();
+        if elapsed < Duration::from_secs(5) {
+            return;
+        }
+
+        use std::sync::atomic::Ordering;
+
+        let poll_time =
+            Duration::from_nanos(stream::FRAME_POLL_NANOS.swap(0, Ordering::Relaxed));
+        let without_new_image = stream::FRAMES_WITHOUT_NEW_IMAGE.swap(0, Ordering::Relaxed);
+
+        let per_frame = |total: Duration| total.as_secs_f32() * 1000.0 / self.waits.max(1) as f32;
+        eprintln!(
+            "Frame loop: {:.1} frames/s (runtime period {:.2} ms), {} not rendered, \
+            {without_new_image} without a new image, avg ms: wait {:.2}, render {:.2} \
+            (of which polling the decoder {:.2}), end {:.2}",
+            self.waits as f32 / elapsed.as_secs_f32(),
+            self.period.as_secs_f32() * 1000.0,
+            self.skipped,
+            per_frame(self.wait_time),
+            per_frame(self.render_time),
+            per_frame(poll_time),
+            per_frame(self.end_time),
+        );
+
+        *self = Self::new();
+    }
 }
 
 #[allow(unused)]
