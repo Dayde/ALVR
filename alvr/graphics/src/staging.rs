@@ -104,6 +104,9 @@ pub struct StagingRenderer {
     yuv_matrix_uloc: gl::UniformLocation,
     #[cfg(target_os = "linux")]
     yuv_offset_uloc: gl::UniformLocation,
+    // Frames drawn since stats_start, printed periodically
+    #[cfg(target_os = "linux")]
+    stats: std::cell::Cell<(std::time::Instant, u32)>,
     framebuffers: [gl::Framebuffer; 2],
     viewport_size: IVec2,
 }
@@ -204,6 +207,8 @@ impl StagingRenderer {
                 yuv_matrix_uloc,
                 #[cfg(target_os = "linux")]
                 yuv_offset_uloc,
+                #[cfg(target_os = "linux")]
+                stats: std::cell::Cell::new((std::time::Instant::now(), 0)),
                 view_idx_uloc,
                 framebuffers: framebuffers.try_into().unwrap(),
                 viewport_size: view_resolution.as_ivec2(),
@@ -219,6 +224,22 @@ impl StagingRenderer {
         self.context.make_current();
 
         let frame = &*(buffer as *const crate::DmabufFrame);
+
+        let (stats_start, count) = self.stats.get();
+        if stats_start.elapsed().as_secs() >= 5 {
+            eprintln!(
+                "Renderer: {:.1} new frames/s, {}x{} format {:#x}, {:?} {} range",
+                count as f32 / stats_start.elapsed().as_secs_f32(),
+                frame.width,
+                frame.height,
+                frame.drm_format,
+                frame.color_space,
+                if frame.full_range { "full" } else { "limited" },
+            );
+            self.stats.set((std::time::Instant::now(), 1));
+        } else {
+            self.stats.set((stats_start, count + 1));
+        }
 
         self.context
             .render_dmabuf_using_textures(frame, self.plane_textures, || unsafe {

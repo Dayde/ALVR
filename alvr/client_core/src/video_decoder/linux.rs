@@ -17,7 +17,7 @@ use std::{
     ptr,
     sync::{mpsc, Arc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 // Frames kept by us on top of what the decoder needs: the queue plus the one being rendered
@@ -370,8 +370,30 @@ fn decoder_loop(
     frames: FrameQueue,
     report_frame_decoded: impl Fn(Result<Duration>),
 ) {
+    const STATS_INTERVAL: Duration = Duration::from_secs(5);
+    let mut stats_start = Instant::now();
+    let mut packets = 0;
+    let mut decoded = 0;
+    let mut dropped = 0;
+    let mut decode_time = Duration::ZERO;
+
     // Ends when the sink is dropped
     while let Ok((timestamp, nal)) = nal_receiver.recv() {
+        if stats_start.elapsed() >= STATS_INTERVAL {
+            let secs = stats_start.elapsed().as_secs_f32();
+            eprintln!(
+                "VAAPI decoder: {:.1} packets/s, {:.1} frames/s, {:.1} dropped/s, {:.2} ms per packet",
+                packets as f32 / secs,
+                decoded as f32 / secs,
+                dropped as f32 / secs,
+                decode_time.as_secs_f32() * 1000.0 / packets.max(1) as f32,
+            );
+            stats_start = Instant::now();
+            (packets, decoded, dropped, decode_time) = (0, 0, 0, Duration::ZERO);
+        }
+        packets += 1;
+        let decode_start = Instant::now();
+
         if let Err(e) = decoder.send_nal(timestamp, &nal) {
             report_frame_decoded(Err(e));
             return;
@@ -386,13 +408,18 @@ fn decoder_loop(
                     // Drop stale frames instead of adding latency
                     while frames.len() >= MAX_QUEUED_FRAMES {
                         frames.pop_front();
+                        dropped += 1;
                     }
                     frames.push_back(frame);
                     drop(frames);
+                    decoded += 1;
 
                     report_frame_decoded(Ok(timestamp));
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    decode_time += decode_start.elapsed();
+                    break;
+                }
                 Err(e) => {
                     report_frame_decoded(Err(e));
                     return;
