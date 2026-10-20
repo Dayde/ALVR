@@ -228,6 +228,13 @@ fn map_button_pair_automatic(
 
         entries.push((source_value, targets));
     }
+    if let Some(source_force) = source.force {
+        let mut targets = vec![];
+        if let Some(destination_force) = destination.force {
+            targets.push(passthrough(destination_force));
+        }
+        entries.push((source_force, targets));
+    }
 
     entries.into_iter()
 }
@@ -268,6 +275,40 @@ pub fn automatic_bindings(
         }
     }
 
+    // System buttons of controllers without a menu button (Index)
+    if s_set.contains(&*LEFT_SYSTEM_CLICK_ID) && !s_set.contains(&*LEFT_MENU_CLICK_ID) {
+        let source = ct(s_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID);
+        if d_set.contains(&*LEFT_SYSTEM_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_MENU_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                click(*LEFT_MENU_CLICK_ID),
+                config,
+            ));
+        }
+    }
+    if s_set.contains(&*RIGHT_SYSTEM_CLICK_ID) && !s_set.contains(&*RIGHT_MENU_CLICK_ID) {
+        let source = ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID);
+        if d_set.contains(&*RIGHT_SYSTEM_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*RIGHT_MENU_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                click(*RIGHT_MENU_CLICK_ID),
+                config,
+            ));
+        }
+    }
+
     // A/X buttons
     if s_set.contains(&*LEFT_X_CLICK_ID) {
         let source = ct(s_set, *LEFT_X_CLICK_ID, *LEFT_X_TOUCH_ID);
@@ -281,6 +322,28 @@ pub fn automatic_bindings(
             bindings.extend(map_button_pair_automatic(
                 source,
                 ct(d_set, *LEFT_A_CLICK_ID, *LEFT_A_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_TRACKPAD_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_TRACKPAD_CLICK_ID, *LEFT_TRACKPAD_TOUCH_ID),
+                config,
+            ));
+        }
+    } else if s_set.contains(&*LEFT_A_CLICK_ID) {
+        // Index controllers have A/B on both hands
+        let source = ct(s_set, *LEFT_A_CLICK_ID, *LEFT_A_TOUCH_ID);
+        if d_set.contains(&*LEFT_A_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_A_CLICK_ID, *LEFT_A_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_X_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_X_CLICK_ID, *LEFT_X_TOUCH_ID),
                 config,
             ));
         } else if d_set.contains(&*LEFT_TRACKPAD_CLICK_ID) {
@@ -321,6 +384,21 @@ pub fn automatic_bindings(
             bindings.extend(map_button_pair_automatic(
                 source,
                 ct(d_set, *LEFT_B_CLICK_ID, *LEFT_B_TOUCH_ID),
+                config,
+            ));
+        }
+    } else if s_set.contains(&*LEFT_B_CLICK_ID) {
+        let source = ct(s_set, *LEFT_B_CLICK_ID, *LEFT_B_TOUCH_ID);
+        if d_set.contains(&*LEFT_B_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_B_CLICK_ID, *LEFT_B_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_Y_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_Y_CLICK_ID, *LEFT_Y_TOUCH_ID),
                 config,
             ));
         }
@@ -523,7 +601,94 @@ pub fn automatic_bindings(
         }
     }
 
+    // Trackpads
+    for id in [
+        *LEFT_TRACKPAD_X_ID,
+        *LEFT_TRACKPAD_Y_ID,
+        *LEFT_TRACKPAD_CLICK_ID,
+        *LEFT_TRACKPAD_TOUCH_ID,
+        *LEFT_TRACKPAD_FORCE_ID,
+        *RIGHT_TRACKPAD_X_ID,
+        *RIGHT_TRACKPAD_Y_ID,
+        *RIGHT_TRACKPAD_CLICK_ID,
+        *RIGHT_TRACKPAD_TOUCH_ID,
+        *RIGHT_TRACKPAD_FORCE_ID,
+    ] {
+        if s_set.contains(&id) && d_set.contains(&id) {
+            bindings.entry(id).or_insert_with(|| vec![passthrough(id)]);
+        }
+    }
+
     bindings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bound_destinations(
+        source_profile: u64,
+        emulation_mode: ControllersEmulationMode,
+    ) -> HashSet<u64> {
+        let source = &CONTROLLER_PROFILE_INFO
+            .get(&source_profile)
+            .unwrap()
+            .button_set;
+        let destination = registered_button_set(&emulation_mode);
+        let config = AutomaticButtonMappingConfig {
+            click_threshold: HysteresisThreshold {
+                value: 0.5,
+                deviation: 0.05,
+            },
+            touch_threshold: HysteresisThreshold {
+                value: 0.1,
+                deviation: 0.05,
+            },
+            force_threshold: 0.8,
+        };
+
+        automatic_bindings(source, &destination, &config)
+            .into_values()
+            .flatten()
+            .map(|target| target.destination)
+            .collect()
+    }
+
+    #[test]
+    fn index_to_index_binds_every_input() {
+        let bound = bound_destinations(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ValveIndex,
+        );
+
+        for id in &CONTROLLER_PROFILE_INFO
+            .get(&INDEX_CONTROLLER_PROFILE_ID)
+            .unwrap()
+            .button_set
+        {
+            assert!(
+                bound.contains(id),
+                "{} is not bound",
+                BUTTON_INFO.get(id).unwrap().path
+            );
+        }
+    }
+
+    #[test]
+    fn index_to_quest_binds_menu_and_left_buttons() {
+        let bound = bound_destinations(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::Quest2Touch,
+        );
+
+        for id in [*LEFT_MENU_CLICK_ID, *LEFT_X_CLICK_ID, *LEFT_Y_CLICK_ID] {
+            assert!(
+                bound.contains(&id),
+                "{} is not bound",
+                BUTTON_INFO.get(&id).unwrap().path
+            );
+        }
+    }
 }
 
 pub struct ButtonMappingManager {
