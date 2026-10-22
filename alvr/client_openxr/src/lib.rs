@@ -32,7 +32,7 @@ use std::{
     path::Path,
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -157,11 +157,18 @@ pub fn request_exit() {
 
 // Counts submitted frames, for the watchdog below
 static FRAMES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
+// Display time of the last submitted frame minus the runtime's predicted display time, in ns, for
+// the watchdog's report
+static LAST_DISPLAY_OFFSET_NS: AtomicI64 = AtomicI64::new(0);
 
 // If Monado started badly (display not set up yet), the session can stay idle or xrWaitFrame can
 // block forever: no frames, black headset. Exit so the service restarts the client.
+// Once frames have been flowing a shorter stall is enough to give up.
 #[cfg(not(target_os = "android"))]
 fn spawn_frame_watchdog() {
+    const STARTUP_TIMEOUT_SECS: u32 = 8;
+    const RUNNING_TIMEOUT_SECS: u32 = 4;
+
     thread::spawn(|| {
         let mut last_count = 0;
         let mut stalled_secs = 0;
@@ -173,13 +180,40 @@ fn spawn_frame_watchdog() {
                 stalled_secs = 0;
             } else {
                 stalled_secs += 1;
-                if stalled_secs >= 8 {
-                    error!("No frame submitted for 8 s, exiting so the client is restarted");
+                let timeout = if count == 0 {
+                    STARTUP_TIMEOUT_SECS
+                } else {
+                    RUNNING_TIMEOUT_SECS
+                };
+                if stalled_secs >= timeout {
+                    error!(
+                        "No frame submitted for {timeout} s ({count} before, last display time \
+                        {:+.1} ms from predicted), exiting so the client is restarted",
+                        LAST_DISPLAY_OFFSET_NS.load(Ordering::Relaxed) as f64 / 1e6
+                    );
+                    dump_thread_stacks();
                     std::process::exit(1);
                 }
             }
         }
     });
+}
+
+// Prints every thread's stack to stdout (the client log, like stderr) with eu-stack, to see where
+// the frame loop is stuck
+#[cfg(not(target_os = "android"))]
+fn dump_thread_stacks() {
+    // With Yama ptrace_scope=1 a child can't attach to its parent unless allowed
+    unsafe {
+        libc::prctl(libc::PR_SET_PTRACER, libc::PR_SET_PTRACER_ANY);
+    }
+    let pid = std::process::id().to_string();
+    if let Err(e) = std::process::Command::new("eu-stack")
+        .args(["-p", &pid])
+        .status()
+    {
+        error!("eu-stack failed: {e}");
+    }
 }
 
 pub fn entry_point() {
@@ -576,6 +610,8 @@ pub fn entry_point() {
             #[cfg(not(target_os = "android"))]
             let render_start = std::time::Instant::now();
             // todo: allow rendering lobby and stream layers at the same time and add cross fade
+            #[cfg(not(target_os = "android"))]
+            let is_stream_frame = stream_context.is_some();
             let (layer, display_time) = if let Some(stream) = &mut stream_context {
                 stream.render(frame_interval, vsync_time)
             } else {
@@ -593,6 +629,24 @@ pub fn entry_point() {
                 } else {
                     &[&layer.build()]
                 };
+
+            #[cfg(not(target_os = "android"))]
+            {
+                let offset_ns = display_time.as_nanos() as i64 - vsync_time.as_nanos() as i64;
+                LAST_DISPLAY_OFFSET_NS.store(offset_ns, Ordering::Relaxed);
+                // Monado keeps a frame queued until its display time, so one far in the future
+                // blocks the next xrEndFrame
+                if offset_ns.abs() > 50_000_000 {
+                    frame_stats.far_display_times += 1;
+                    if frame_stats.far_display_times <= 3 {
+                        eprintln!(
+                            "Display time {:+.1} ms from predicted (stream frame: {})",
+                            offset_ns as f64 / 1e6,
+                            is_stream_frame
+                        );
+                    }
+                }
+            }
 
             graphics_context.make_current();
             let res = xr_frame_stream.end(
@@ -638,6 +692,7 @@ struct FrameLoopStats {
     wait_time: Duration,
     render_time: Duration,
     end_time: Duration,
+    far_display_times: u32,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -651,6 +706,7 @@ impl FrameLoopStats {
             wait_time: Duration::ZERO,
             render_time: Duration::ZERO,
             end_time: Duration::ZERO,
+            far_display_times: 0,
         }
     }
 
@@ -670,7 +726,7 @@ impl FrameLoopStats {
         eprintln!(
             "Frame loop: {:.1} frames/s (runtime period {:.2} ms), {} not rendered, \
             {without_new_image} without a new image, avg ms: wait {:.2}, render {:.2} \
-            (of which polling the decoder {:.2}), end {:.2}",
+            (of which polling the decoder {:.2}), end {:.2}, {} display times >50 ms off",
             self.waits as f32 / elapsed.as_secs_f32(),
             self.period.as_secs_f32() * 1000.0,
             self.skipped,
@@ -678,6 +734,7 @@ impl FrameLoopStats {
             per_frame(self.render_time),
             per_frame(poll_time),
             per_frame(self.end_time),
+            self.far_display_times,
         );
 
         *self = Self::new();

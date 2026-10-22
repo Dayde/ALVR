@@ -19,6 +19,9 @@ alvr_system_info.workspace = true
 
 openxr = { git = "https://github.com/Ralith/openxrs", rev = "9270509d23dc774b43a8b7289e8adf69fcac6828" }
 
+[target.'cfg(not(target_os = "android"))'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
 jni = "0.21"
