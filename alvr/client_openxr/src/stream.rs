@@ -35,10 +35,13 @@ use std::{
 };
 
 const DECODER_MAX_TIMEOUT_MULTIPLIER: f32 = 0.8;
+// Furthest a frame's display time may be after the runtime's predicted display time
+const MAX_DISPLAY_TIME_AHEAD: Duration = Duration::from_millis(100);
 
 // Read and reset by the frame loop stats
 pub static FRAME_POLL_NANOS: AtomicU64 = AtomicU64::new(0);
 pub static FRAMES_WITHOUT_NEW_IMAGE: AtomicU64 = AtomicU64::new(0);
+pub static FRAMES_TIMESTAMP_AHEAD: AtomicU64 = AtomicU64::new(0);
 
 pub struct ParsedStreamConfig {
     pub view_resolution: UVec2,
@@ -430,6 +433,20 @@ impl StreamContext {
         // one second we begin presenting a lagged vsync time instead.
         let mut openxr_display_time =
             Duration::max(timestamp, vsync_time.saturating_sub(Duration::from_secs(1)));
+        // The streamer finds a frame's timestamp by matching its head pose against recent tracking,
+        // which still holds the previous session's samples after a reconnect. Monado's clock starts
+        // when Monado starts, so if Monado restarted, an old sample can be far in the future, and
+        // Monado holds that frame (and every later one) until then: the stream freezes.
+        if openxr_display_time > vsync_time + MAX_DISPLAY_TIME_AHEAD {
+            if FRAMES_TIMESTAMP_AHEAD.fetch_add(1, Ordering::Relaxed) == 0 {
+                eprintln!(
+                    "Frame timestamp {:.1} ms after the predicted display time, using the \
+                    predicted time",
+                    (openxr_display_time - vsync_time).as_secs_f64() * 1000.0
+                );
+            }
+            openxr_display_time = vsync_time;
+        }
 
         // (shinyquagsire23) I don't entirely trust runtimes to implement CompositionLayerProjectionView
         // correctly, but if we do trust them, avoid doing rotation ourselves. Otherwise, rerender.

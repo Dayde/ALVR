@@ -163,7 +163,8 @@ static LAST_DISPLAY_OFFSET_NS: AtomicI64 = AtomicI64::new(0);
 
 // If Monado started badly (display not set up yet), the session can stay idle or xrWaitFrame can
 // block forever: no frames, black headset. Exit so the service restarts the client.
-// Once frames have been flowing a shorter stall is enough to give up.
+// Once frames have been flowing a shorter stall is enough to give up (a frame with a display time
+// far in the future used to block xrEndFrame for good, see MAX_DISPLAY_TIME_AHEAD in stream.rs).
 #[cfg(not(target_os = "android"))]
 fn spawn_frame_watchdog() {
     const STARTUP_TIMEOUT_SECS: u32 = 8;
@@ -721,12 +722,14 @@ impl FrameLoopStats {
         let poll_time =
             Duration::from_nanos(stream::FRAME_POLL_NANOS.swap(0, Ordering::Relaxed));
         let without_new_image = stream::FRAMES_WITHOUT_NEW_IMAGE.swap(0, Ordering::Relaxed);
+        let timestamp_ahead = stream::FRAMES_TIMESTAMP_AHEAD.load(Ordering::Relaxed);
 
         let per_frame = |total: Duration| total.as_secs_f32() * 1000.0 / self.waits.max(1) as f32;
         eprintln!(
             "Frame loop: {:.1} frames/s (runtime period {:.2} ms), {} not rendered, \
             {without_new_image} without a new image, avg ms: wait {:.2}, render {:.2} \
-            (of which polling the decoder {:.2}), end {:.2}, {} display times >50 ms off",
+            (of which polling the decoder {:.2}), end {:.2}, {} display times >50 ms off, \
+            {timestamp_ahead} future timestamps replaced so far",
             self.waits as f32 / elapsed.as_secs_f32(),
             self.period.as_secs_f32() * 1000.0,
             self.skipped,
