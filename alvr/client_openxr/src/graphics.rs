@@ -17,6 +17,54 @@ pub fn session_create_info(ctx: &GraphicsContext) -> xr::opengles::SessionCreate
     unimplemented!()
 }
 
+/// Creates a session on desktop runtimes (Monado) by handing them our EGL context through
+/// XR_MNDX_egl_enable. The openxr crate only exposes the Android GLES binding, so the session is
+/// created through the raw API.
+///
+/// # Safety
+/// `ctx` must outlive the session.
+#[cfg(not(target_os = "android"))]
+pub unsafe fn create_egl_session(
+    instance: &xr::Instance,
+    system: xr::SystemId,
+    ctx: &GraphicsContext,
+) -> (
+    xr::Session<xr::OpenGlEs>,
+    xr::FrameWaiter,
+    xr::FrameStream<xr::OpenGlEs>,
+) {
+    use std::ptr;
+
+    let binding = xr::sys::GraphicsBindingEGLMNDX {
+        ty: xr::sys::GraphicsBindingEGLMNDX::TYPE,
+        next: ptr::null(),
+        get_proc_address: Some(std::mem::transmute::<
+            alvr_graphics::EglGetProcAddressFn,
+            xr::sys::platform::EglGetProcAddressMNDX,
+        >(ctx.egl_get_proc_address)),
+        display: ctx.egl_display.as_ptr(),
+        config: ctx.egl_config.as_ptr(),
+        context: ctx.egl_context.as_ptr(),
+    };
+    let info = xr::sys::SessionCreateInfo {
+        ty: xr::sys::SessionCreateInfo::TYPE,
+        next: ptr::from_ref(&binding).cast(),
+        create_flags: Default::default(),
+        system_id: system,
+    };
+
+    ctx.make_current();
+
+    let mut handle = xr::sys::Session::NULL;
+    let res = (instance.fp().create_session)(instance.as_raw(), &info, &mut handle);
+    assert!(
+        res.into_raw() >= 0,
+        "xrCreateSession with XR_MNDX_egl_enable failed: {res:?}"
+    );
+
+    xr::Session::from_raw(instance.clone(), handle, Box::new(()))
+}
+
 pub fn swapchain_format(
     gfx_ctx: &GraphicsContext,
     session: &xr::Session<xr::OpenGlEs>,

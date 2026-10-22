@@ -26,12 +26,19 @@ use openxr as xr;
 use std::{
     ptr,
     rc::Rc,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 const DECODER_MAX_TIMEOUT_MULTIPLIER: f32 = 0.8;
+
+// Read and reset by the frame loop stats
+pub static FRAME_POLL_NANOS: AtomicU64 = AtomicU64::new(0);
+pub static FRAMES_WITHOUT_NEW_IMAGE: AtomicU64 = AtomicU64::new(0);
 
 pub struct ParsedStreamConfig {
     pub view_resolution: UVec2,
@@ -53,6 +60,17 @@ pub struct ParsedStreamConfig {
 
 impl ParsedStreamConfig {
     pub fn new(config: &StreamConfig) -> Self {
+        let negotiated = &config.negotiated_config;
+        eprintln!(
+            "Stream config: {}x{} per eye, {} Hz, foveated encoding: {}, full range: {}, HDR: {}",
+            negotiated.view_resolution.x,
+            negotiated.view_resolution.y,
+            negotiated.refresh_rate_hint,
+            negotiated.enable_foveated_encoding,
+            negotiated.use_full_range,
+            negotiated.enable_hdr,
+        );
+
         Self {
             view_resolution: config.negotiated_config.view_resolution,
             refresh_rate_hint: config.negotiated_config.refresh_rate_hint,
@@ -178,6 +196,13 @@ impl StreamContext {
             ),
         ];
 
+        // The previous stream's decoder sink stays installed across reconnections and keeps
+        // accepting frames, so no IDR (and no DecoderConfig resend) would ever be requested for this
+        // stream. Replace it with one that rejects frames: this drops the old decoder and asks the
+        // streamer for a fresh decoder config. MediaCodec sinks fail on their own once stopped.
+        #[cfg(not(target_os = "android"))]
+        core_ctx.set_decoder_input_callback(Box::new(|_, _| false));
+
         let renderer = StreamRenderer::new(
             gfx_ctx,
             config.view_resolution,
@@ -199,7 +224,9 @@ impl StreamContext {
             format,
             config.foveated_encoding_config.clone(),
             platform != Platform::Lynx && !((platform.is_pico()) && config.enable_hdr),
-            config.use_full_range && !config.enable_hdr, // TODO: figure out why HDR doesn't need the limited range hackfix in staging?
+            // TODO: figure out why HDR doesn't need the limited range hackfix in staging?
+            // On Linux the dma-buf import is told the real range, so no fix is needed
+            config.use_full_range && !config.enable_hdr && cfg!(not(target_os = "linux")),
             config.encoding_gamma,
             config.upscaling.clone(),
         );
@@ -345,11 +372,16 @@ impl StreamContext {
                 frame_interval.as_secs_f32() * DECODER_MAX_TIMEOUT_MULTIPLIER,
             );
         let mut frame_result = None;
+        let poll_start = Instant::now();
         if let Some((_, source)) = &mut self.decoder {
             while frame_result.is_none() && Instant::now() < frame_poll_deadline {
                 frame_result = source.get_frame();
                 thread::sleep(Duration::from_micros(500));
             }
+        }
+        FRAME_POLL_NANOS.fetch_add(poll_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if frame_result.is_none() {
+            FRAMES_WITHOUT_NEW_IMAGE.fetch_add(1, Ordering::Relaxed);
         }
 
         let (timestamp, view_params, buffer_ptr) =
@@ -527,6 +559,9 @@ fn stream_input_loop(
     let mut last_palm_poses = [Pose::default(); 2];
     let mut last_view_params = [ViewParams::default(); 2];
 
+    #[cfg(not(target_os = "android"))]
+    let mut input_stats = InputStats::new();
+
     let mut deadline = Instant::now();
     let frame_interval = Duration::from_secs_f32(1.0 / refresh_rate);
     while running.value() {
@@ -588,6 +623,15 @@ fn stream_input_loop(
             &mut last_palm_poses[1],
         );
 
+        // Monado reports a hand skeleton derived from Index controllers ("conforming" hand
+        // tracking) whenever they are held, which would hide the controllers below. On desktop a
+        // tracked controller wins; the streamer derives finger poses from its buttons.
+        #[cfg(not(target_os = "android"))]
+        let (left_hand_skeleton, right_hand_skeleton) = (
+            left_hand_skeleton.filter(|_| left_hand_motion.is_none()),
+            right_hand_skeleton.filter(|_| right_hand_motion.is_none()),
+        );
+
         // Note: When multimodal input is enabled, we are sure that when free hands are used
         // (not holding controllers) the controller data is None.
         if int_ctx.multimodal_hands_enabled || left_hand_skeleton.is_none() {
@@ -636,6 +680,21 @@ fn stream_input_loop(
             device_motions.append(&mut interaction::get_bd_motion_trackers(now, tracker));
         }
 
+        #[cfg(not(target_os = "android"))]
+        {
+            input_stats.polls += 1;
+            input_stats.head = head_motion.pose;
+            for (id, _) in &device_motions {
+                if *id == *HAND_LEFT_ID {
+                    input_stats.left_controller += 1;
+                } else if *id == *HAND_RIGHT_ID {
+                    input_stats.right_controller += 1;
+                }
+            }
+            input_stats.left_skeleton += u32::from(left_hand_skeleton.is_some());
+            input_stats.right_skeleton += u32::from(right_hand_skeleton.is_some());
+        }
+
         core_ctx.send_tracking(
             Duration::from_nanos(now.as_nanos() as u64),
             device_motions,
@@ -644,11 +703,62 @@ fn stream_input_loop(
         );
 
         let button_entries = interaction::update_buttons(&xr_session, &int_ctx.button_actions);
+
+        #[cfg(not(target_os = "android"))]
+        {
+            input_stats.buttons += button_entries.len() as u32;
+            if input_stats.start.elapsed() >= Duration::from_secs(5) {
+                let s = &input_stats;
+                eprintln!(
+                    "Input: {} polls, controller poses sent L {} R {}, hand skeletons sent L {} R {}, \
+                    {} button changes, head pos {:.3?} rot {:.3?}",
+                    s.polls,
+                    s.left_controller,
+                    s.right_controller,
+                    s.left_skeleton,
+                    s.right_skeleton,
+                    s.buttons,
+                    s.head.position,
+                    s.head.orientation,
+                );
+                input_stats = InputStats::new();
+            }
+        }
+
         if !button_entries.is_empty() {
             core_ctx.send_buttons(button_entries);
         }
 
         deadline += frame_interval / 3;
         thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    }
+}
+
+// What the input thread sent to the streamer, printed periodically on desktop
+#[cfg(not(target_os = "android"))]
+struct InputStats {
+    start: Instant,
+    polls: u32,
+    left_controller: u32,
+    right_controller: u32,
+    left_skeleton: u32,
+    right_skeleton: u32,
+    buttons: u32,
+    head: Pose,
+}
+
+#[cfg(not(target_os = "android"))]
+impl InputStats {
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            polls: 0,
+            left_controller: 0,
+            right_controller: 0,
+            left_skeleton: 0,
+            right_skeleton: 0,
+            buttons: 0,
+            head: Pose::default(),
+        }
     }
 }

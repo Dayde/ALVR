@@ -23,6 +23,11 @@ pub const SDR_FORMAT_GL: u32 = gl::RGBA8;
 pub const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
 pub const MAX_PUSH_CONSTANTS_SIZE: u32 = 128;
 
+#[cfg(target_os = "android")]
+const EGL_LIBRARY_NAME: &str = "libEGL.so";
+#[cfg(not(target_os = "android"))]
+const EGL_LIBRARY_NAME: &str = "libEGL.so.1";
+
 type CreateImageFn = unsafe extern "C" fn(
     egl::EGLDisplay,
     egl::EGLContext,
@@ -33,6 +38,41 @@ type CreateImageFn = unsafe extern "C" fn(
 type DestroyImageFn = unsafe extern "C" fn(egl::EGLDisplay, egl::EGLImage) -> egl::Boolean;
 type GetNativeClientBufferFn = unsafe extern "C" fn(*const c_void) -> egl::EGLClientBuffer;
 type ImageTargetTexture2DFn = unsafe extern "C" fn(egl::Enum, egl::EGLImage);
+pub type EglGetProcAddressFn = unsafe extern "C" fn(*const std::ffi::c_char) -> *const c_void;
+
+pub const MAX_DMABUF_PLANES: usize = 4;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DmabufPlane {
+    pub fd: i32,
+    pub offset: u32,
+    pub pitch: u32,
+    pub modifier: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum YuvColorSpace {
+    Bt601,
+    #[default]
+    Bt709,
+    Bt2020,
+}
+
+/// A decoded video frame exported as a Linux dma-buf (for example a VAAPI surface). This is what
+/// the Linux decoder hands to the renderer in place of an AHardwareBuffer.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DmabufFrame {
+    pub width: u32,
+    pub height: u32,
+    /// DRM fourcc of the whole (multi-planar) image, for example NV12 or P010
+    pub drm_format: u32,
+    pub plane_count: usize,
+    pub planes: [DmabufPlane; MAX_DMABUF_PLANES],
+    /// DRM fourcc of each plane viewed on its own, for example R8 and GR88 for NV12
+    pub plane_formats: [u32; MAX_DMABUF_PLANES],
+    pub color_space: YuvColorSpace,
+    pub full_range: bool,
+}
 
 pub fn check_error(gl: &gl::Context, message_context: &str) {
     let err = unsafe { gl.get_error() };
@@ -204,8 +244,13 @@ pub struct GraphicsContext {
 
     create_image: CreateImageFn,
     destroy_image: DestroyImageFn,
-    get_native_client_buffer: GetNativeClientBufferFn,
+    // Only present on Android
+    #[cfg_attr(target_os = "linux", expect(dead_code))]
+    get_native_client_buffer: Option<GetNativeClientBufferFn>,
     image_target_texture_2d: ImageTargetTexture2DFn,
+
+    /// eglGetProcAddress of the EGL library used by this context, needed by XR_MNDX_egl_enable
+    pub egl_get_proc_address: EglGetProcAddressFn,
 }
 
 impl GraphicsContext {
@@ -298,7 +343,7 @@ impl GraphicsContext {
                 let create_image: CreateImageFn = mem::transmute(get_fn_ptr(CREATE_IMAGE_FN_STR));
                 let destroy_image: DestroyImageFn =
                     mem::transmute(get_fn_ptr(DESTROY_IMAGE_FN_STR));
-                let get_native_client_buffer: GetNativeClientBufferFn =
+                let get_native_client_buffer: Option<GetNativeClientBufferFn> =
                     mem::transmute(get_fn_ptr(GET_NATIVE_CLIENT_BUFFER_FN_STR));
                 let image_target_texture_2d: ImageTargetTexture2DFn =
                     mem::transmute(get_fn_ptr(IMAGE_TARGET_TEXTURE_2D_FN_STR));
@@ -315,6 +360,17 @@ impl GraphicsContext {
             })
         };
 
+        // wgpu opens the same library, so this resolves to the same EGL implementation
+        let egl_get_proc_address = unsafe {
+            let lib = libloading::Library::new(EGL_LIBRARY_NAME).unwrap();
+            let func = *lib
+                .get::<EglGetProcAddressFn>(b"eglGetProcAddress\0")
+                .unwrap();
+            mem::forget(lib);
+
+            func
+        };
+
         Self {
             _instance: instance,
             adapter,
@@ -329,6 +385,7 @@ impl GraphicsContext {
             destroy_image,
             get_native_client_buffer,
             image_target_texture_2d,
+            egl_get_proc_address,
         }
     }
 
@@ -359,29 +416,147 @@ impl GraphicsContext {
         };
     }
 
+    #[cfg(not(target_os = "linux"))]
+    unsafe fn create_image_from_buffer(&self, buffer: *const c_void) -> egl::EGLImage {
+        const EGL_NATIVE_BUFFER_ANDROID: u32 = 0x3140;
+
+        let client_buffer = (self.get_native_client_buffer.unwrap())(buffer);
+        check_error(&self.gl_context, "get_native_client_buffer");
+
+        (self.create_image)(
+            self.egl_display.as_ptr(),
+            egl::NO_CONTEXT,
+            EGL_NATIVE_BUFFER_ANDROID,
+            client_buffer,
+            ptr::null(),
+        )
+    }
+
+    /// Imports one plane of a dma-buf frame as a single-channel or two-channel image (R8/GR88 or
+    /// R16/GR1616). wgpu creates a desktop GL context on Linux, which cannot sample multi-planar
+    /// external images, so the planes are sampled as plain 2D textures and converted in the
+    /// shader.
+    #[cfg(target_os = "linux")]
+    unsafe fn create_plane_image(&self, frame: &DmabufFrame, plane_idx: usize) -> egl::EGLImage {
+        const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
+        const EGL_LINUX_DRM_FOURCC_EXT: i32 = 0x3271;
+        const EGL_DMA_BUF_PLANE0_FD_EXT: i32 = 0x3272;
+        const EGL_DMA_BUF_PLANE0_OFFSET_EXT: i32 = 0x3273;
+        const EGL_DMA_BUF_PLANE0_PITCH_EXT: i32 = 0x3274;
+        const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: i32 = 0x3443;
+        const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: i32 = 0x3444;
+        const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
+
+        let plane = &frame.planes[plane_idx];
+        // Chroma is subsampled 2x2 in both NV12 and P010
+        let (width, height) = if plane_idx == 0 {
+            (frame.width, frame.height)
+        } else {
+            (frame.width.div_ceil(2), frame.height.div_ceil(2))
+        };
+
+        let mut attribs = vec![
+            egl::WIDTH,
+            width as i32,
+            egl::HEIGHT,
+            height as i32,
+            EGL_LINUX_DRM_FOURCC_EXT,
+            frame.plane_formats[plane_idx] as i32,
+            EGL_DMA_BUF_PLANE0_FD_EXT,
+            plane.fd,
+            EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+            plane.offset as i32,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT,
+            plane.pitch as i32,
+        ];
+        if plane.modifier != DRM_FORMAT_MOD_INVALID {
+            attribs.extend([
+                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                plane.modifier as u32 as i32,
+                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                (plane.modifier >> 32) as u32 as i32,
+            ]);
+        }
+        attribs.push(egl::NONE);
+
+        (self.create_image)(
+            self.egl_display.as_ptr(),
+            egl::NO_CONTEXT,
+            EGL_LINUX_DMA_BUF_EXT,
+            ptr::null_mut(),
+            attribs.as_ptr(),
+        )
+    }
+
+    /// Binds the luma and chroma planes of `frame` to `textures` (as GL_TEXTURE_2D on texture
+    /// units 0 and 1) for the duration of `render_cb`.
+    ///
+    /// # Safety
+    /// `frame` must describe valid dma-bufs and `textures` must be valid GL textures.
+    #[cfg(target_os = "linux")]
+    pub unsafe fn render_dmabuf_using_textures(
+        &self,
+        frame: &DmabufFrame,
+        textures: [gl::Texture; 2],
+        render_cb: impl FnOnce(),
+    ) {
+        if frame.plane_count < 2 {
+            alvr_common::error!("Expected 2 planes in decoded frame, got {}", frame.plane_count);
+            return;
+        }
+
+        // Errors left by other GL users of this context (wgpu, the OpenXR runtime) are not ours
+        while self.gl_context.get_error() != gl::NO_ERROR {}
+
+        let mut images = vec![];
+        for (idx, texture) in textures.iter().enumerate() {
+            let image = self.create_plane_image(frame, idx);
+            if image.is_null() {
+                alvr_common::error!(
+                    "eglCreateImageKHR failed for plane {idx} (format {:#x}, modifier {:#x})",
+                    frame.plane_formats[idx],
+                    frame.planes[idx].modifier
+                );
+                for image in images {
+                    (self.destroy_image)(self.egl_display.as_ptr(), image);
+                }
+                return;
+            }
+
+            self.gl_context.active_texture(gl::TEXTURE0 + idx as u32);
+            self.gl_context.bind_texture(gl::TEXTURE_2D, Some(*texture));
+            (self.image_target_texture_2d)(gl::TEXTURE_2D, image);
+            check_error(&self.gl_context, "image_target_texture_2d");
+
+            images.push(image);
+        }
+
+        render_cb();
+
+        for image in images {
+            (self.destroy_image)(self.egl_display.as_ptr(), image);
+        }
+        self.gl_context.active_texture(gl::TEXTURE0);
+        check_error(&self.gl_context, "destroy_image");
+    }
+
     /// # Safety
     /// `buffer` must be a valid AHardwareBuffer.
     /// `texture` must be a valid GL texture.
+    #[cfg(not(target_os = "linux"))]
     pub unsafe fn render_ahardwarebuffer_using_texture(
         &self,
         buffer: *const c_void,
         texture: gl::Texture,
         render_cb: impl FnOnce(),
     ) {
-        const EGL_NATIVE_BUFFER_ANDROID: u32 = 0x3140;
-
         if !buffer.is_null() {
-            let client_buffer = (self.get_native_client_buffer)(buffer);
-            check_error(&self.gl_context, "get_native_client_buffer");
-
-            let image = (self.create_image)(
-                self.egl_display.as_ptr(),
-                egl::NO_CONTEXT,
-                EGL_NATIVE_BUFFER_ANDROID,
-                client_buffer,
-                ptr::null(),
-            );
+            let image = self.create_image_from_buffer(buffer);
             check_error(&self.gl_context, "create_image");
+            if image.is_null() {
+                alvr_common::error!("eglCreateImageKHR failed for decoded frame");
+                return;
+            }
 
             self.gl_context
                 .bind_texture(GL_TEXTURE_EXTERNAL_OES, Some(texture));

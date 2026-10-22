@@ -207,8 +207,17 @@ impl InteractionContext {
             p if p.is_pico() => PICO4S_CONTROLLER_PROFILE_PATH,
             p if p.is_vive() => FOCUS3_CONTROLLER_PROFILE_PATH,
             p if p.is_yvr() => YVR_CONTROLLER_PROFILE_PATH,
+            // Desktop Linux runs on Monado with Lighthouse controllers. ALVR_CONTROLLER_PROFILE=vive
+            // selects Vive wands instead of Index controllers.
+            Platform::LinuxPc => match std::env::var("ALVR_CONTROLLER_PROFILE").as_deref() {
+                Ok("vive") => VIVE_CONTROLLER_PROFILE_PATH,
+                Ok("quest") => QUEST_CONTROLLER_PROFILE_PATH,
+                _ => INDEX_CONTROLLER_PROFILE_PATH,
+            },
             _ => QUEST_CONTROLLER_PROFILE_PATH,
         };
+        #[cfg(not(target_os = "android"))]
+        eprintln!("Controller interaction profile: {controllers_profile_path}");
         let controllers_profile_id = alvr_common::hash_string(controllers_profile_path);
 
         // Create actions:
@@ -400,12 +409,26 @@ impl InteractionContext {
             .create_space(xr_session.clone(), xr::Path::NULL, xr::Posef::IDENTITY)
             .unwrap();
 
-        let left_hand_tracker = create_ext_object("HandTracker (left)", Some(true), || {
-            xr_session.create_hand_tracker(xr::Hand::LEFT)
-        });
-        let right_hand_tracker = create_ext_object("HandTracker (right)", Some(true), || {
-            xr_session.create_hand_tracker(xr::Hand::RIGHT)
-        });
+        // Monado's hand tracking on desktop is derived from the Index controllers, which are sent
+        // as controllers instead. ALVR_HAND_TRACKING=1 re-enables it.
+        let hand_tracking_enabled = platform != Platform::LinuxPc
+            || std::env::var("ALVR_HAND_TRACKING").as_deref() == Ok("1");
+        #[cfg(not(target_os = "android"))]
+        eprintln!(
+            "Hand tracking: {}",
+            if hand_tracking_enabled { "on" } else { "off" }
+        );
+
+        let left_hand_tracker = create_ext_object(
+            "HandTracker (left)",
+            Some(hand_tracking_enabled),
+            || xr_session.create_hand_tracker(xr::Hand::LEFT),
+        );
+        let right_hand_tracker = create_ext_object(
+            "HandTracker (right)",
+            Some(hand_tracking_enabled),
+            || xr_session.create_hand_tracker(xr::Hand::RIGHT),
+        );
 
         // Note: HTC facial tracking can only be created at startup before xrBeginSession. We don't
         // know the reason.

@@ -28,7 +28,16 @@ use interaction::{InteractionContext, InteractionSourcesConfig};
 use lobby::Lobby;
 use openxr as xr;
 use passthrough::PassthroughLayer;
-use std::{path::Path, rc::Rc, sync::Arc, thread, time::Duration};
+use std::{
+    path::Path,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 use stream::StreamContext;
 
 fn from_xr_vec3(v: xr::Vector3f) -> Vec3 {
@@ -126,15 +135,58 @@ fn create_session(
     xr::FrameWaiter,
     xr::FrameStream<xr::OpenGlEs>,
 ) {
+    #[cfg(target_os = "android")]
     unsafe {
         xr_instance
             .create_session(xr_system, &graphics::session_create_info(graphics_context))
             .unwrap()
     }
+    #[cfg(not(target_os = "android"))]
+    unsafe {
+        graphics::create_egl_session(xr_instance, xr_system, graphics_context)
+    }
+}
+
+static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Asks the frame loop to end the OpenXR session and return from entry_point(). Only stores an
+// atomic, so it is safe to call from a signal handler.
+pub fn request_exit() {
+    EXIT_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+// Counts submitted frames, for the watchdog below
+static FRAMES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
+
+// If Monado started badly (display not set up yet), the session can stay idle or xrWaitFrame can
+// block forever: no frames, black headset. Exit so the service restarts the client.
+#[cfg(not(target_os = "android"))]
+fn spawn_frame_watchdog() {
+    thread::spawn(|| {
+        let mut last_count = 0;
+        let mut stalled_secs = 0;
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            let count = FRAMES_SUBMITTED.load(Ordering::Relaxed);
+            if count != last_count || EXIT_REQUESTED.load(Ordering::Relaxed) {
+                last_count = count;
+                stalled_secs = 0;
+            } else {
+                stalled_secs += 1;
+                if stalled_secs >= 8 {
+                    error!("No frame submitted for 8 s, exiting so the client is restarted");
+                    std::process::exit(1);
+                }
+            }
+        }
+    });
 }
 
 pub fn entry_point() {
     alvr_client_core::init_logging();
+
+    #[cfg(not(target_os = "android"))]
+    spawn_frame_watchdog();
 
     let platform = alvr_system_info::platform();
 
@@ -149,9 +201,12 @@ pub fn entry_point() {
         Platform::Lynx => "_lynx",
         _ => "",
     };
-    let xr_entry = unsafe {
-        xr::Entry::load_from(Path::new(&format!("libopenxr_loader{loader_suffix}.so"))).unwrap()
-    };
+    #[cfg(target_os = "android")]
+    let loader_name = format!("libopenxr_loader{loader_suffix}.so");
+    // On desktop Linux the loader comes from the system "openxr" package
+    #[cfg(not(target_os = "android"))]
+    let loader_name = format!("libopenxr_loader{loader_suffix}.so.1");
+    let xr_entry = unsafe { xr::Entry::load_from(Path::new(&loader_name)).unwrap() };
 
     #[cfg(target_os = "android")]
     xr_entry.initialize_android_loader().unwrap();
@@ -184,6 +239,12 @@ pub fn entry_point() {
     #[cfg(target_os = "android")]
     {
         exts.khr_android_create_instance = true;
+    }
+    // Desktop runtimes (Monado) take the EGL context through XR_MNDX_egl_enable
+    #[cfg(not(target_os = "android"))]
+    {
+        assert!(available_extensions.mndx_egl_enable);
+        exts.mndx_egl_enable = true;
     }
     exts.khr_convert_timespec_time = true;
     exts.khr_opengl_es_enable = true;
@@ -269,7 +330,7 @@ pub fn entry_point() {
             encoder_10_bits: platform != Platform::Unknown,
             encoder_av1: matches!(
                 platform,
-                Platform::Quest3 | Platform::Quest3S | Platform::Pico4Ultra
+                Platform::Quest3 | Platform::Quest3S | Platform::Pico4Ultra | Platform::LinuxPc
             ),
             prefer_10bit: false,
             prefer_full_range: true,
@@ -310,8 +371,12 @@ pub fn entry_point() {
             .select_sources(&lobby_interaction_sources);
 
         let mut session_running = false;
+        let mut exit_sent = false;
         let mut stream_context = None::<StreamContext>;
         let mut passthrough_layer = None;
+
+        #[cfg(not(target_os = "android"))]
+        let mut frame_stats = FrameLoopStats::new();
 
         let mut event_storage = xr::EventDataBuffer::new();
         'render_loop: loop {
@@ -321,7 +386,10 @@ pub fn entry_point() {
                         error!("OpenXR: lost {} events!", event.lost_event_count());
                     }
                     xr::Event::InstanceLossPending(_) => break 'session_loop,
-                    xr::Event::SessionStateChanged(event) => match event.state() {
+                    xr::Event::SessionStateChanged(event) => match {
+                        info!("OpenXR session state: {:?}", event.state());
+                        event.state()
+                    } {
                         xr::SessionState::READY => {
                             xr_session
                                 .begin(xr::ViewConfigurationType::PRIMARY_STEREO)
@@ -343,7 +411,10 @@ pub fn entry_point() {
                             xr_session.end().unwrap();
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
-                            break 'render_loop
+                            if EXIT_REQUESTED.load(Ordering::Relaxed) {
+                                break 'session_loop;
+                            }
+                            break 'render_loop;
                         }
                         _ => (),
                     },
@@ -373,6 +444,16 @@ pub fn entry_point() {
                         // todo
                     }
                     _ => (),
+                }
+            }
+
+            if EXIT_REQUESTED.load(Ordering::Relaxed) {
+                if !session_running {
+                    break 'session_loop;
+                } else if !exit_sent {
+                    info!("Exit requested, ending the OpenXR session");
+                    xr_session.request_exit().ok();
+                    exit_sent = true;
                 }
             }
 
@@ -438,6 +519,7 @@ pub fn entry_point() {
                             .unwrap();
                     }
                     ClientCoreEvent::DecoderConfig { codec, config_nal } => {
+                        eprintln!("Decoder config: {codec:?}, {} bytes", config_nal.len());
                         if let Some(stream) = &mut stream_context {
                             stream.maybe_initialize_decoder(codec, config_nal);
                         }
@@ -456,6 +538,8 @@ pub fn entry_point() {
                 }
             }
 
+            #[cfg(not(target_os = "android"))]
+            let wait_start = std::time::Instant::now();
             let frame_state = match xr_frame_waiter.wait() {
                 Ok(state) => state,
                 Err(e) => {
@@ -467,6 +551,13 @@ pub fn entry_point() {
                 Duration::from_nanos(frame_state.predicted_display_period.as_nanos() as _);
             let vsync_time =
                 Duration::from_nanos(frame_state.predicted_display_time.as_nanos() as _);
+            #[cfg(not(target_os = "android"))]
+            {
+                frame_stats.waits += 1;
+                frame_stats.wait_time += wait_start.elapsed();
+                frame_stats.skipped += u32::from(!frame_state.should_render);
+                frame_stats.period = frame_interval;
+            }
 
             xr_frame_stream.begin().unwrap();
 
@@ -482,11 +573,18 @@ pub fn entry_point() {
                 continue;
             }
 
+            #[cfg(not(target_os = "android"))]
+            let render_start = std::time::Instant::now();
             // todo: allow rendering lobby and stream layers at the same time and add cross fade
             let (layer, display_time) = if let Some(stream) = &mut stream_context {
                 stream.render(frame_interval, vsync_time)
             } else {
                 (lobby.render(vsync_time), vsync_time)
+            };
+            #[cfg(not(target_os = "android"))]
+            let end_start = {
+                frame_stats.render_time += render_start.elapsed();
+                std::time::Instant::now()
             };
 
             let layers: &[&xr::CompositionLayerBase<_>] =
@@ -502,6 +600,13 @@ pub fn entry_point() {
                 xr::EnvironmentBlendMode::OPAQUE,
                 layers,
             );
+
+            #[cfg(not(target_os = "android"))]
+            {
+                frame_stats.end_time += end_start.elapsed();
+                frame_stats.maybe_print();
+                FRAMES_SUBMITTED.fetch_add(1, Ordering::Relaxed);
+            }
 
             if let Err(e) = res {
                 let time = to_xr_time(display_time);
@@ -521,6 +626,62 @@ pub fn entry_point() {
     }
 
     // grapics_context is dropped here
+}
+
+// Frame loop timings, printed periodically on desktop to see where frame time goes
+#[cfg(not(target_os = "android"))]
+struct FrameLoopStats {
+    start: std::time::Instant,
+    waits: u32,
+    skipped: u32,
+    period: Duration,
+    wait_time: Duration,
+    render_time: Duration,
+    end_time: Duration,
+}
+
+#[cfg(not(target_os = "android"))]
+impl FrameLoopStats {
+    fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            waits: 0,
+            skipped: 0,
+            period: Duration::ZERO,
+            wait_time: Duration::ZERO,
+            render_time: Duration::ZERO,
+            end_time: Duration::ZERO,
+        }
+    }
+
+    fn maybe_print(&mut self) {
+        let elapsed = self.start.elapsed();
+        if elapsed < Duration::from_secs(5) {
+            return;
+        }
+
+        use std::sync::atomic::Ordering;
+
+        let poll_time =
+            Duration::from_nanos(stream::FRAME_POLL_NANOS.swap(0, Ordering::Relaxed));
+        let without_new_image = stream::FRAMES_WITHOUT_NEW_IMAGE.swap(0, Ordering::Relaxed);
+
+        let per_frame = |total: Duration| total.as_secs_f32() * 1000.0 / self.waits.max(1) as f32;
+        eprintln!(
+            "Frame loop: {:.1} frames/s (runtime period {:.2} ms), {} not rendered, \
+            {without_new_image} without a new image, avg ms: wait {:.2}, render {:.2} \
+            (of which polling the decoder {:.2}), end {:.2}",
+            self.waits as f32 / elapsed.as_secs_f32(),
+            self.period.as_secs_f32() * 1000.0,
+            self.skipped,
+            per_frame(self.wait_time),
+            per_frame(self.render_time),
+            per_frame(poll_time),
+            per_frame(self.end_time),
+        );
+
+        *self = Self::new();
+    }
 }
 
 #[allow(unused)]

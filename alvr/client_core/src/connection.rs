@@ -59,6 +59,8 @@ const DISCOVERY_RETRY_PAUSE: Duration = Duration::from_millis(500);
 const RETRY_CONNECT_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const CONNECTION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const HANDSHAKE_ACTION_TIMEOUT: Duration = Duration::from_secs(2);
+// The streamer opens its audio devices before sending the stream config; on Windows this can exceed 2 s
+const STREAM_CONFIG_TIMEOUT: Duration = Duration::from_secs(15);
 const STREAMING_RECV_TIMEOUT: Duration = Duration::from_millis(500);
 
 const MAX_UNREAD_PACKETS: usize = 10; // Applies per stream
@@ -218,7 +220,7 @@ fn connection_pipeline(
         })
         .to_con()?;
     let config_packet =
-        proto_control_socket.recv::<StreamConfigPacket>(HANDSHAKE_ACTION_TIMEOUT)?;
+        proto_control_socket.recv::<StreamConfigPacket>(STREAM_CONFIG_TIMEOUT)?;
     dbg_connection!("connection_pipeline: stream config received");
 
     let stream_config = alvr_packets::decode_stream_config(&config_packet).to_con()?;
@@ -248,7 +250,7 @@ fn connection_pipeline(
         .split(STREAMING_RECV_TIMEOUT)
         .to_con()?;
 
-    match control_receiver.recv(HANDSHAKE_ACTION_TIMEOUT) {
+    match control_receiver.recv(STREAM_CONFIG_TIMEOUT) {
         Ok(ServerControlPacket::StartStream) => {
             info!("Stream starting");
             set_hud_message(&event_queue, STREAM_STARTING_MESSAGE);

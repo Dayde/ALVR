@@ -1,0 +1,16 @@
+[package]
+name = "alvr_client_linux"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "alvr_client_linux"
+path = "src/main.rs"
+
+[dependencies]
+alvr_client_openxr = { path = "../client_openxr" }
+alvr_common = { path = "../common" }
+libc = "0.2"
