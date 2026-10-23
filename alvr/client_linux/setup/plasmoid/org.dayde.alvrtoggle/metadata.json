@@ -1,0 +1,19 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "cedric.nis@gmail.com",
+                "Name": "dayde"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Start or stop the alvr-client user service",
+        "Icon": "applications-games",
+        "Id": "org.dayde.alvrtoggle",
+        "License": "GPL-2.0+",
+        "Name": "ALVR Client Toggle",
+        "Version": "1.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
