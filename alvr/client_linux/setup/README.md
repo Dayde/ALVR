@@ -22,6 +22,9 @@ set up the headset display. Both restart on their own when something goes wrong.
 | `run-alvr-client-service.sh` | Runs the client with the Monado runtime and logs to `logs/client-<time>.log` |
 | `launch-alvr-client.sh` | Manual one-click launcher: starts Monado through Envision if it isn't running, then the client in a terminal |
 | `alvr-client.desktop` | Menu entry for `launch-alvr-client.sh` |
+| `plasmoid/org.dayde.alvrtoggle` | KDE Plasma panel widget that starts and stops `alvr-client.service` and shows its state. It waits for systemd's change signals instead of polling |
+| `system/70-bigscreen-beyond.rules` | udev rule giving the logged-in user access to the Beyond's USB devices (vendor `35bd`) |
+| `system/10-power-key.conf` | logind drop-in: the power button powers off even when KDE holds an inhibitor. The services then stop in order: client, then Monado |
 | `monado/*.patch` | Changes to Monado this setup relies on, see below |
 
 The scripts expect this layout: the client checkout in `~/claude-remote/alvr-client/src`, these
@@ -65,6 +68,20 @@ cp systemd/*.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable alvr-monado.service alvr-client.service
 ```
+
+The system files need root:
+
+```
+sudo cp system/70-bigscreen-beyond.rules /etc/udev/rules.d/
+sudo mkdir -p /etc/systemd/logind.conf.d && sudo cp system/10-power-key.conf /etc/systemd/logind.conf.d/
+```
+
+On KDE, PowerDevil still holds the power key while no regular monitor is connected, so the button
+does nothing on a headless box. Mask it for your user (you lose KDE's power settings applet):
+`systemctl --user mask --now plasma-powerdevil.service`.
+
+Panel widget: `cp -r plasmoid/org.dayde.alvrtoggle ~/.local/share/plasma/plasmoids/`, then add
+"ALVR Client Toggle" to a panel.
 
 Don't start Monado from Envision while `alvr-monado.service` runs: only one process can drive the
 headset. Logs: `journalctl --user -u alvr-monado -u alvr-client` and the client logs in
