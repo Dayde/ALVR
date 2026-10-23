@@ -1,6 +1,18 @@
 // Desktop Linux client: runs as a regular OpenXR app on a local runtime (Monado), which drives the
 // headset, and streams from an ALVR streamer over the network.
+extern "C" fn on_exit_signal(_: libc::c_int) {
+    alvr_client_openxr::request_exit();
+}
+
 fn main() {
+    // Close the session cleanly on SIGTERM (systemd stop, shutdown), SIGINT (Ctrl+C) and SIGHUP
+    // (terminal closed), so Monado and the streamer see a normal disconnect
+    unsafe {
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            libc::signal(signal, on_exit_signal as libc::sighandler_t);
+        }
+    }
+
     // The client never opens a window, so steer wgpu's EGL setup away from Wayland and X11 to the
     // surfaceless platform, which supports the offscreen pbuffer the renderer needs.
     if std::env::var_os("ALVR_KEEP_WINDOW_SYSTEM").is_none() {
@@ -9,4 +21,6 @@ fn main() {
     }
 
     alvr_client_openxr::entry_point();
+
+    alvr_common::info!("Client exited cleanly");
 }

@@ -28,7 +28,16 @@ use interaction::{InteractionContext, InteractionSourcesConfig};
 use lobby::Lobby;
 use openxr as xr;
 use passthrough::PassthroughLayer;
-use std::{path::Path, rc::Rc, sync::Arc, thread, time::Duration};
+use std::{
+    path::Path,
+    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
 use stream::StreamContext;
 
 fn from_xr_vec3(v: xr::Vector3f) -> Vec3 {
@@ -138,8 +147,46 @@ fn create_session(
     }
 }
 
+static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Asks the frame loop to end the OpenXR session and return from entry_point(). Only stores an
+// atomic, so it is safe to call from a signal handler.
+pub fn request_exit() {
+    EXIT_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+// Counts submitted frames, for the watchdog below
+static FRAMES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
+
+// If Monado started badly (display not set up yet), the session can stay idle or xrWaitFrame can
+// block forever: no frames, black headset. Exit so the service restarts the client.
+#[cfg(not(target_os = "android"))]
+fn spawn_frame_watchdog() {
+    thread::spawn(|| {
+        let mut last_count = 0;
+        let mut stalled_secs = 0;
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            let count = FRAMES_SUBMITTED.load(Ordering::Relaxed);
+            if count != last_count || EXIT_REQUESTED.load(Ordering::Relaxed) {
+                last_count = count;
+                stalled_secs = 0;
+            } else {
+                stalled_secs += 1;
+                if stalled_secs >= 8 {
+                    error!("No frame submitted for 8 s, exiting so the client is restarted");
+                    std::process::exit(1);
+                }
+            }
+        }
+    });
+}
+
 pub fn entry_point() {
     alvr_client_core::init_logging();
+
+    #[cfg(not(target_os = "android"))]
+    spawn_frame_watchdog();
 
     let platform = alvr_system_info::platform();
 
@@ -324,6 +371,7 @@ pub fn entry_point() {
             .select_sources(&lobby_interaction_sources);
 
         let mut session_running = false;
+        let mut exit_sent = false;
         let mut stream_context = None::<StreamContext>;
         let mut passthrough_layer = None;
 
@@ -338,7 +386,10 @@ pub fn entry_point() {
                         error!("OpenXR: lost {} events!", event.lost_event_count());
                     }
                     xr::Event::InstanceLossPending(_) => break 'session_loop,
-                    xr::Event::SessionStateChanged(event) => match event.state() {
+                    xr::Event::SessionStateChanged(event) => match {
+                        info!("OpenXR session state: {:?}", event.state());
+                        event.state()
+                    } {
                         xr::SessionState::READY => {
                             xr_session
                                 .begin(xr::ViewConfigurationType::PRIMARY_STEREO)
@@ -360,7 +411,10 @@ pub fn entry_point() {
                             xr_session.end().unwrap();
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
-                            break 'render_loop
+                            if EXIT_REQUESTED.load(Ordering::Relaxed) {
+                                break 'session_loop;
+                            }
+                            break 'render_loop;
                         }
                         _ => (),
                     },
@@ -390,6 +444,16 @@ pub fn entry_point() {
                         // todo
                     }
                     _ => (),
+                }
+            }
+
+            if EXIT_REQUESTED.load(Ordering::Relaxed) {
+                if !session_running {
+                    break 'session_loop;
+                } else if !exit_sent {
+                    info!("Exit requested, ending the OpenXR session");
+                    xr_session.request_exit().ok();
+                    exit_sent = true;
                 }
             }
 
@@ -541,6 +605,7 @@ pub fn entry_point() {
             {
                 frame_stats.end_time += end_start.elapsed();
                 frame_stats.maybe_print();
+                FRAMES_SUBMITTED.fetch_add(1, Ordering::Relaxed);
             }
 
             if let Err(e) = res {

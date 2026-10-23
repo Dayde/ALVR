@@ -236,6 +236,8 @@ name = "alvr_client_linux"
 version = "20.14.1"
 dependencies = [
  "alvr_client_openxr",
+ "alvr_common",
+ "libc",
 ]
 
 [[package]]
