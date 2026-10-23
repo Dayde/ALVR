@@ -1,0 +1,24 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=ALVR client (streams the PC to the Bigscreen Beyond)
+Requires=alvr-monado.service
+# Restart together with Monado (the client can't reattach to a new Monado)
+PartOf=alvr-monado.service
+After=alvr-monado.service graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+# Wait until Monado has found the devices and set up the Beyond's display (flag written by
+# run-monado-service.sh)
+# (gives up after 60 s and starts anyway; the client's own no-frame watchdog takes over)
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do [ -e "$XDG_RUNTIME_DIR/alvr-monado-ready" ] && exit 0; sleep 0.5; done; exit 0'
+TimeoutStartSec=120
+ExecStart=%h/claude-remote/alvr-client/run-alvr-client-service.sh
+KillMode=mixed
+TimeoutStopSec=10
+Restart=always
+RestartSec=1
+
+
+[Install]
+WantedBy=graphical-session.target

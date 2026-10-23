@@ -1,0 +1,44 @@
+diff --git a/src/xrt/compositor/main/comp_target_swapchain.c b/src/xrt/compositor/main/comp_target_swapchain.c
+index 522509a4e..14299c5d4 100644
+--- a/src/xrt/compositor/main/comp_target_swapchain.c
++++ b/src/xrt/compositor/main/comp_target_swapchain.c
+@@ -550,6 +550,13 @@ vblank_event_func(struct comp_target *ct, int64_t *out_timestamp_ns)
+ 		*out_timestamp_ns = now_ns;
+ 		valid = true;
+ 
++		// B3-W1 local patch: marks the display as really scanning out, alvr-client waits for it
++		static bool first_vblank_logged = false;
++		if (!first_vblank_logged) {
++			first_vblank_logged = true;
++			COMP_INFO(ct->c, "First vblank event received, display is live");
++		}
++
+ 	} else if (ret == VK_TIMEOUT) {
+ 		COMP_WARN(ct->c, "vkWaitForFences: VK_TIMEOUT");
+ 	} else {
+@@ -575,6 +582,13 @@ run_vblank_event_thread(void *ptr)
+ 	// Try to raise priority of this thread.
+ 	u_try_to_set_realtime_priority_on_thread(U_LOGGING_INFO, "VBlank Events");
+ 
++	/*
++	 * Skip the first second of presents (B3-W1 local patch): registering a display event before the
++	 * first modeset on the leased connector has landed fails in amdgpu ("dc_stream_state is NULL")
++	 * and ends in VK_ERROR_DEVICE_LOST, which only a reboot recovers from.
++	 */
++	int presents_to_skip = 90;
++
+ 	os_thread_helper_lock(&cts->vblank.event_thread);
+ 
+ 	while (os_thread_helper_is_running_locked(&cts->vblank.event_thread)) {
+@@ -599,6 +613,11 @@ run_vblank_event_thread(void *ptr)
+ 			continue;
+ 		}
+ 
++		if (presents_to_skip > 0) {
++			presents_to_skip--;
++			continue;
++		}
++
+ 		// Unlock while waiting.
+ 		os_thread_helper_unlock(&cts->vblank.event_thread);
+ 

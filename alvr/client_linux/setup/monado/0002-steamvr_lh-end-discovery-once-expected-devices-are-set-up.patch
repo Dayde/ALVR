@@ -1,0 +1,57 @@
+diff --git a/src/xrt/drivers/steamvr_lh/steamvr_lh.cpp b/src/xrt/drivers/steamvr_lh/steamvr_lh.cpp
+index 548eba116..a57ac561b 100644
+--- a/src/xrt/drivers/steamvr_lh/steamvr_lh.cpp
++++ b/src/xrt/drivers/steamvr_lh/steamvr_lh.cpp
+@@ -85,6 +85,9 @@ namespace {
+ DEBUG_GET_ONCE_LOG_OPTION(lh_log, "LIGHTHOUSE_LOG", U_LOGGING_INFO)
+ DEBUG_GET_ONCE_BOOL_OPTION(lh_load_slimevr, "LH_LOAD_SLIMEVR", false)
+ DEBUG_GET_ONCE_NUM_OPTION(lh_discover_wait_ms, "LH_DISCOVER_WAIT_MS", 3000)
++// B3-W1 local patch: end discovery as soon as the HMD and this many controllers/trackers are set up
++// (0 = always wait the full LH_DISCOVER_WAIT_MS)
++DEBUG_GET_ONCE_NUM_OPTION(lh_expected_controllers, "LH_EXPECTED_CONTROLLERS", 0)
+ DEBUG_GET_ONCE_FLOAT_OPTION(lh_stick_deadzone, "LH_STICK_DEADZONE", 0)
+ 
+ static constexpr size_t MAX_CONTROLLERS = 16;
+@@ -380,7 +383,24 @@ Context::wait_for_discover()
+ 	this->discover_end_time =
+ 	    std::chrono::steady_clock::now() + std::chrono::milliseconds(debug_get_num_option_lh_discover_wait_ms());
+ 
++	const size_t expected_controllers = debug_get_num_option_lh_expected_controllers();
++	auto expected_found = [this, expected_controllers] {
++		if (expected_controllers == 0 || !this->hmd || this->devices_in_setup != 0)
++			return false;
++		size_t controllers = 0;
++		for (size_t i = 0; i < MAX_CONTROLLERS; i++) {
++			if (this->controller[i])
++				controllers++;
++		}
++		return controllers >= expected_controllers;
++	};
++
+ 	while (true) {
++		if (expected_found()) {
++			CTX_INFO("All expected devices found, ending discovery early");
++			break;
++		}
++
+ 		if (std::chrono::steady_clock::now() < this->discover_end_time) {
+ 			this->discover_cv.wait_until(lk, this->discover_end_time);
+ 			continue;
+@@ -415,9 +435,16 @@ Context::TrackedDeviceAdded(const char *pchDeviceSerialNumber,
+ 		std::lock_guard lk(this->devices_mut);
+ 
+ 		if (!this->in_setup) {
++			// Base stations are never added to xrt_system_devices, so a late one is harmless
++			// (B3-W1 local patch, keeps the "Cannot add" warning for devices that matter)
++			if (eDeviceClass == vr::TrackedDeviceClass_TrackingReference) {
++				CTX_INFO("Found lighthouse base station after setup: %s", pchDeviceSerialNumber);
++				return false;
++			}
+ 			// devices appearing after setup are not added to xrt_system_devices and would be leaked on
+ 			// exit
+-			CTX_WARN("Cannot add device after setup; consider increasing LH_DISCOVER_WAIT_MS");
++			CTX_WARN("Cannot add device after setup (%s, class %u); consider increasing LH_DISCOVER_WAIT_MS",
++			         pchDeviceSerialNumber, (unsigned)eDeviceClass);
+ 			return false;
+ 		}
+ 

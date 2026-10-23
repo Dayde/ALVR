@@ -1,0 +1,25 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=Monado for the ALVR client (Bigscreen Beyond)
+After=graphical-session.target
+PartOf=graphical-session.target
+# (Re)start the client whenever Monado starts, also after a failed attempt
+Wants=alvr-client.service
+
+[Service]
+# Same settings Envision passes (lighthouse-default profile + global env vars)
+# Patched Monado build (vblank race fix, early end of discovery with LH_EXPECTED_CONTROLLERS), see ~/.local/share/envision/monado git diff
+Environment=MONADO_BIN=%h/.local/share/envision/prefixes/lighthouse_default/bin/monado-service LD_LIBRARY_PATH=%h/.local/share/envision/prefixes/lighthouse_default/lib
+Environment=STEAMVR_LH_ENABLE=true XRT_COMPOSITOR_COMPUTE=1 U_PACING_COMP_MIN_TIME_MS=8 XRT_COMPOSITOR_SCALE_PERCENTAGE=100 IPC_EXIT_ON_DISCONNECT=off LH_EXPECTED_CONTROLLERS=2 LH_DISCOVER_WAIT_MS=20000
+ExecStartPre=/bin/rm -f %t/alvr-monado-ready
+ExecStartPre=%h/claude-remote/alvr-client/wait-for-beyond.sh
+ExecStopPost=/bin/rm -f %t/alvr-monado-ready
+ExecStart=%h/claude-remote/alvr-client/run-monado-service.sh
+Restart=on-failure
+RestartSec=5
+
+TimeoutStartSec=120
+TimeoutStopSec=10
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=ALVR Client (Beyond)
+Comment=Start Monado if needed and run the ALVR client for the Bigscreen Beyond
+Exec=sh -c "\\$HOME/claude-remote/alvr-client/launch-alvr-client.sh"
+Icon=applications-games
+Terminal=true
+Categories=Game;
