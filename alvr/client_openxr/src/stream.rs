@@ -683,6 +683,7 @@ fn stream_input_loop(
         #[cfg(not(target_os = "android"))]
         {
             input_stats.polls += 1;
+            input_stats.head = head_motion.pose;
             for (id, _) in &device_motions {
                 if *id == *HAND_LEFT_ID {
                     input_stats.left_controller += 1;
@@ -710,13 +711,15 @@ fn stream_input_loop(
                 let s = &input_stats;
                 eprintln!(
                     "Input: {} polls, controller poses sent L {} R {}, hand skeletons sent L {} R {}, \
-                    {} button changes",
+                    {} button changes, head pos {:.3?} rot {:.3?}",
                     s.polls,
                     s.left_controller,
                     s.right_controller,
                     s.left_skeleton,
                     s.right_skeleton,
                     s.buttons,
+                    s.head.position,
+                    s.head.orientation,
                 );
                 input_stats = InputStats::new();
             }
@@ -741,6 +744,7 @@ struct InputStats {
     left_skeleton: u32,
     right_skeleton: u32,
     buttons: u32,
+    head: Pose,
 }
 
 #[cfg(not(target_os = "android"))]
@@ -754,6 +758,7 @@ impl InputStats {
             left_skeleton: 0,
             right_skeleton: 0,
             buttons: 0,
+            head: Pose::default(),
         }
     }
 }
