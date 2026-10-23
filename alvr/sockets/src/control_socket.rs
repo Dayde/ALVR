@@ -53,7 +53,13 @@ fn framed_recv<R: DeserializeOwned>(
         let mut payload_length_bytes = [0; FRAMED_PREFIX_LENGTH];
 
         loop {
-            let count = socket.peek(&mut payload_length_bytes).handle_try_again()?;
+            // The socket read timeout can be shorter than `timeout` (500 ms after accept), so keep
+            // waiting until the deadline instead of failing on the first timed out peek
+            let count = match socket.peek(&mut payload_length_bytes).handle_try_again() {
+                Ok(count) => count,
+                Err(alvr_common::ConnectionError::TryAgain(_)) => 0,
+                Err(e) => return Err(e),
+            };
             if count == FRAMED_PREFIX_LENGTH {
                 break;
             } else if Instant::now() > deadline {
