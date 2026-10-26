@@ -9,7 +9,8 @@ uniform samplerExternalOES tex;
 const float LIMITED_MIN = 16.0 / 255.0;
 const float LIMITED_MAX = 235.0 / 255.0;
 
-in vec2 uv;
+// mediump (fp16 on mobile GPUs) is too coarse to address every texel of the decoded frame
+in highp vec2 uv;
 out vec4 out_color;
 
 void main() {
