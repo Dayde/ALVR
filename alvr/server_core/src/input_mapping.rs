@@ -352,6 +352,28 @@ pub fn automatic_bindings(
                 config,
             ));
         }
+    } else if s_set.contains(&*LEFT_A_CLICK_ID) {
+        // Index controllers have A/B buttons on both hands
+        let source = ct(s_set, *LEFT_A_CLICK_ID, *LEFT_A_TOUCH_ID);
+        if d_set.contains(&*LEFT_A_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_A_CLICK_ID, *LEFT_A_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_X_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_X_CLICK_ID, *LEFT_X_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_TRACKPAD_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_TRACKPAD_CLICK_ID, *LEFT_TRACKPAD_TOUCH_ID),
+                config,
+            ));
+        }
     }
     if s_set.contains(&*RIGHT_A_CLICK_ID) {
         let source = ct(s_set, *RIGHT_A_CLICK_ID, *RIGHT_A_TOUCH_ID);
@@ -383,6 +405,21 @@ pub fn automatic_bindings(
             bindings.extend(map_button_pair_automatic(
                 source,
                 ct(d_set, *LEFT_B_CLICK_ID, *LEFT_B_TOUCH_ID),
+                config,
+            ));
+        }
+    } else if s_set.contains(&*LEFT_B_CLICK_ID) {
+        let source = ct(s_set, *LEFT_B_CLICK_ID, *LEFT_B_TOUCH_ID);
+        if d_set.contains(&*LEFT_B_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_B_CLICK_ID, *LEFT_B_TOUCH_ID),
+                config,
+            ));
+        } else if d_set.contains(&*LEFT_Y_CLICK_ID) {
+            bindings.extend(map_button_pair_automatic(
+                source,
+                ct(d_set, *LEFT_Y_CLICK_ID, *LEFT_Y_TOUCH_ID),
                 config,
             ));
         }
@@ -948,6 +985,30 @@ mod tests {
                 "right/input/trigger/value -> right/input/trigger/value (passthrough)",
             ],
         );
+    }
+
+    #[test]
+    fn index_to_quest_binds_menu_and_left_buttons() {
+        let descriptions = binding_descriptions(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::Quest2Touch,
+        );
+
+        // Index has A/B on both hands, Quest has X/Y on the left and A/B on the right
+        for expected in [
+            "left/input/system/click -> left/input/menu/click (passthrough)",
+            "left/input/a/click -> left/input/x/click (passthrough)",
+            "left/input/a/touch -> left/input/x/touch (passthrough)",
+            "left/input/b/click -> left/input/y/click (passthrough)",
+            "left/input/b/touch -> left/input/y/touch (passthrough)",
+            "right/input/a/click -> right/input/a/click (passthrough)",
+            "right/input/a/touch -> right/input/a/touch (passthrough)",
+            "right/input/b/click -> right/input/b/click (passthrough)",
+            "right/input/b/touch -> right/input/b/touch (passthrough)",
+            "right/input/system/click -> right/input/system/click (passthrough)",
+        ] {
+            assert!(descriptions.contains(expected), "missing {expected}");
+        }
     }
 
     #[test]
