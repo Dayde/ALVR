@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use alvr_common::anyhow::{Result, bail};
 use alvr_common::glam::UVec2;
 use alvr_graphics::GraphicsContext;
 use alvr_session::ClientsidePostProcessingConfig;
@@ -16,6 +18,57 @@ pub fn session_create_info(ctx: &GraphicsContext) -> xr::opengles::SessionCreate
     }
     #[cfg(not(target_os = "android"))]
     unimplemented!()
+}
+
+/// Creates a session on desktop runtimes (Monado) by handing them our EGL context through
+/// XR_MNDX_egl_enable. The openxr crate only exposes the Android binding of
+/// XR_KHR_opengl_es_enable, so the session is created through the raw API.
+///
+/// # Safety
+/// - `instance` must have been created with XR_MNDX_egl_enable enabled, and
+///   xrGetOpenGLESGraphicsRequirementsKHR must have been called for `system`, as the spec requires
+///   before xrCreateSession.
+/// - The session is wrapped as a `Session<OpenGlEs>`, which is only correct because MNDX sessions
+///   use the OpenGL ES swapchain image type.
+/// - `ctx` must outlive the session.
+#[cfg(target_os = "linux")]
+pub unsafe fn create_egl_session(
+    instance: &xr::Instance,
+    system: xr::SystemId,
+    ctx: &GraphicsContext,
+) -> Result<(
+    xr::Session<xr::OpenGlEs>,
+    xr::FrameWaiter,
+    xr::FrameStream<xr::OpenGlEs>,
+)> {
+    let Some(egl_get_proc_address) = ctx.egl_get_proc_address else {
+        bail!("Cannot load eglGetProcAddress, needed by XR_MNDX_egl_enable");
+    };
+
+    let binding = xr::sys::GraphicsBindingEGLMNDX {
+        ty: xr::sys::GraphicsBindingEGLMNDX::TYPE,
+        next: ptr::null(),
+        get_proc_address: Some(egl_get_proc_address),
+        display: ctx.egl_display.as_ptr(),
+        config: ctx.egl_config.as_ptr(),
+        context: ctx.egl_context.as_ptr(),
+    };
+    let info = xr::sys::SessionCreateInfo {
+        ty: xr::sys::SessionCreateInfo::TYPE,
+        next: ptr::from_ref(&binding).cast(),
+        create_flags: xr::SessionCreateFlags::EMPTY,
+        system_id: system,
+    };
+
+    ctx.make_current();
+
+    let mut handle = <xr::sys::Session as xr::sys::Handle>::NULL;
+    let result = unsafe { (instance.fp().create_session)(instance.as_raw(), &info, &mut handle) };
+    if result.into_raw() < 0 {
+        bail!("xrCreateSession with XR_MNDX_egl_enable failed: {result}");
+    }
+
+    Ok(unsafe { xr::Session::from_raw(instance.clone(), handle, Box::new(())) })
 }
 
 pub fn swapchain_format(
