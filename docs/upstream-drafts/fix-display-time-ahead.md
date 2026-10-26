@@ -110,10 +110,13 @@ v20.14.1-based Linux client fork (Monado), where the freeze stopped reproducing.
   `max_prediction_ms`. It is not tied to that setting; if reviewers prefer, it could be raised to 200 ms
   (the slider maximum) or derived from `max_prediction_ms`.
 
+## Checklist
+
 - [ ] This PR respects our AI policy: I completely understand and "own" the coding decisions made, and can discuss them without relying on AI copy-pasted responses.
 - [ ] This PR's description contains a human-written summary of the content of the code.
 - [ ] Testing: ...
 
-Pre-submit checklist (for Dayde):
-- [ ] Live test on a headset with Monado (reconnect after restarting `monado-service`) with this branch
-- [ ] Quick sanity run on Quest
+<!-- Pre-submit checklist (for Dayde, invisible when pasted):
+- Live test on a headset with Monado (reconnect after restarting `monado-service`) with this branch
+- Quick sanity run on Quest
+-->

@@ -45,7 +45,7 @@ On Windows, the streamer can be slow to answer while it probes the audio devices
 
 ### Why fix the client and not (only) the streamer?
 
-An obvious alternative is to send the stream config before the slow audio probing. That is what the closed #3366 did for the v20 branch; it was declined for v20, and its master equivalent was never submitted. On master that is only partly possible:
+An obvious alternative is to send the stream config before the slow audio probing. That is what the closed #3366 did for the v20 branch; the maintainer did not merge it for v20 (he asked whether it was written against master), and no master version was submitted. On master that is only partly possible:
 
 - The stream config **depends on the probe result**: `game_audio_sample_rate` comes from `input_sample_rate(&game_audio_device)` (L842) and is part of `ClientNegotiatedStreamingConfig`. Opening the game audio output device therefore has to happen before the config can be sent.
 - The VB-Cable/VAC loopback check (`new_virtual_microphone_pair` + `is_same_device`, L824-839) does not feed the config. It could move after the handshake or into the microphone thread. That would be a good follow-up streamer-side PR, but it only removes part of the delay.
@@ -89,9 +89,9 @@ An obvious alternative is to send the stream config before the slow audio probin
 | client StartStream `recv(HANDSHAKE_ACTION_TIMEOUT)` | 2 s vs 500 ms | really waits 2 s now |
 | client streaming `control_receiver.recv(STREAMING_RECV_TIMEOUT)` | 500 ms vs 500 ms | unchanged |
 | streamer `connect_to_client` → `recv(timeout)` | 1 s vs 1 s | unchanged |
-| streamer StreamReady `recv(HANDSHAKE_ACTION_TIMEOUT)` (`lib.rs` L172) | 2 s vs 1 s | really waits 2 s now (was 1 s) |
+| streamer StreamReady `recv(HANDSHAKE_ACTION_TIMEOUT)` (`sockets/src/lib.rs` L172) | 2 s vs 1 s | really waits 2 s now (was 1 s) |
 | streamer streaming `control_receiver.recv(STREAMING_RECV_TIMEOUT)` | 500 ms vs 1 s | unchanged (blocks up to 1 s, as before) |
-| `SocketConnection::from_server_connection` (`lib.rs` L201) | timeout vs caller's socket | waits the full timeout; unused by the client on master |
+| `SocketConnection::from_server_connection` (`sockets/src/lib.rs` L201) | timeout vs caller's socket | waits the full timeout; unused by the client on master |
 | any caller, peer closed | — | immediate `Other` error instead of a CPU spin followed by `TryAgain`; the streaming loops already treat `Other` as "disconnected" |
 
 ## Testing
@@ -118,10 +118,10 @@ Run in the worktree, on Linux x86_64, with the toolchain from `rust-toolchain.to
 
 ## Related issues/PRs
 
-- #3365 "handshake error when mic is active" (open). This may fix the slow-enumeration variant. A commenter traced at least one case to VB-Cable device naming instead: `new_virtual_microphone_pair` fails and the streamer drops the socket. This PR does not fix that case; the client now just fails fast instead of timing out.
+- #3365 "handshake error when mic is active" (open). This may fix the slow-enumeration variant. A commenter suggests VB-Cable device naming as another cause (workaround: select the device by name substring). If that makes `new_virtual_microphone_pair` fail, the streamer drops the socket; this PR does not fix that case, the client just fails fast instead of timing out.
 - #3381 "cannot reconnect due to os error" (open). Windows + VB-Cable; it may be the same slow-enumeration variant, unconfirmed. The reporter says it persists until the PC is restarted and mentions 10053/10054, which hints at a streamer-side problem rather than (only) a slow handshake.
 - #3221, #3231, #3047, #2900, #2491, #2296: older "os error 11" handshake reports, mostly closed as stale. Same symptom; the causes may differ.
-- **#3366 "fix(audio): prevent handshake timeouts and duplicate client connections"** (closed, not merged). A streamer-side approach (move virtual-mic enumeration out of the handshake) on the v20 branch, which the maintainer declined for v20. It does not conflict with this PR and would complement it; see "Why fix the client".
+- **#3366 "fix(audio): prevent handshake timeouts and duplicate client connections"** (closed, not merged). A streamer-side approach (move virtual-mic enumeration out of the handshake) on the v20 branch, which the maintainer did not merge for v20. It does not conflict with this PR and would complement it; see "Why fix the client".
 - #2944 "fix: bump cpal+rodio, fix os error 11 timeout" (merged 2025). It made device enumeration faster; the timeout behaviour stayed the same.
 - #3321 "unified socket abstraction" (merged). This PR builds on it.
 - #2718 "unified sockets (1): server" (open draft). It touches the same area and could conflict if revived.

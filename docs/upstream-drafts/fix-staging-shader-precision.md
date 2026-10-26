@@ -22,7 +22,7 @@ Which devices this hits is uncertain. Mali phones (PhoneVR / the Android client)
 
 ## Root cause
 
-**How the coordinate is produced.** `staging_vertex.glsl` draws a full-screen strip of 4 vertices and outputs `uv = ((screen_uv.x + view_idx) / 2, screen_uv.y)`. That is a highp vertex output (the vertex language defaults to highp). It is interpolated and read in the fragment shader as `in vec2 uv`, which takes the fragment default `mediump`. It does not use `gl_FragCoord`. GLSL ES 3.00.6 §4.3.10 (Linking of Vertex Outputs and Fragment Inputs): *"The minimum precision at which vertex outputs are interpolated is the minimum of the vertex output precision and the fragment input precision, with the exception that for highp, implementations do not have to support full IEEE 754 precision. In this case, the precision of the interpolated value is defined by a range and resolution as below:"* (the 3.00.6 document does not actually include a table after that sentence). So with the mediump default, `uv` may be interpolated and stored at mediump. With `highp`, interpolation is not strictly guaranteed to be full fp32 either, but it is no longer capped at mediump.
+**How the coordinate is produced.** `staging_vertex.glsl` draws a full-screen strip of 4 vertices and outputs `uv = ((screen_uv.x + view_idx) / 2, screen_uv.y)`. That is a highp vertex output (the vertex language defaults to highp). It is interpolated and read in the fragment shader as `in vec2 uv`, which takes the fragment default `mediump`. It does not use `gl_FragCoord`. GLSL ES 3.00.6 §4.3.10 (Linking of Vertex Outputs and Fragment Inputs): *"The minimum precision at which vertex outputs are interpolated is the minimum of the vertex output precision and the fragment input precision, with the exception that for highp, implementations do not have to support full IEEE 754 precision. …"*. So with the mediump default, `uv` may be interpolated and stored at mediump. With `highp`, interpolation is not strictly guaranteed to be full fp32 either, but it is no longer capped at mediump.
 
 For output pixel `i` of eye `v`, the exact coordinate is `uv.x = (i + 0.5 + v*W) / (2W)`, which is the center of source texel `i + v*W`. Left-eye coordinates fall in `[0, 0.5)` and right-eye coordinates in `[0.5, 1)`.
 
@@ -83,7 +83,7 @@ All commands were run in the worktree with `CARGO_TARGET_DIR=/home/user/target-s
 **Not tested:**
 - On a headset or phone (Quest 1/2/3, Pico, Lynx, Mali phones). I have not confirmed the blur on real hardware or measured performance.
 - The Android build (`cargo xtask build-client`), because the NDK can't be downloaded in this environment.
-- Adreno may already sample an unmodified varying passed straight to `texture()` at full precision (texture-prefetch path), which would hide the issue on Quest. Mali is the most likely place to see it. Please check by comparing on-device captures of a fine vertical-line test pattern, left eye vs right eye, before and after.
+- Which GPUs are affected (see Problem: Adreno may hide it, Mali is the most likely). Please check by comparing on-device captures of a fine vertical-line test pattern, left eye vs right eye, before and after.
 
 ## Related issues/PRs
 
@@ -101,6 +101,8 @@ All commands were run in the worktree with `CARGO_TARGET_DIR=/home/user/target-s
   - If such a driver did exist, the failure would be limited to the staging copy.
 - Performance: one highp varying in a single-fetch copy pass. Expected to be negligible, but not measured.
 - No behavior change on desktop/llvmpipe (already fp32).
+
+## Checklist
 
 - [ ] This PR respects our AI policy: I completely understand and "own" the coding decisions made, and can discuss them without relying on AI copy-pasted responses.
 - [ ] This PR's description contains a human-written summary of the content of the code.

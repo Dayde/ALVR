@@ -114,10 +114,13 @@ on the v20.14.1-based fork, which lacked #3368).
 - `Hmd::StartStreaming()` is also the hook for any future stream-start re-entry; clearing there on
   every call is intentional.
 
+## Checklist
+
 - [ ] This PR respects our AI policy: I completely understand and "own" the coding decisions made, and can discuss them without relying on AI copy-pasted responses.
 - [ ] This PR's description contains a human-written summary of the content of the code.
 - [ ] Testing: ...
 
-Pre-submit checklist (for Dayde):
-- [ ] Live reconnect test on a Windows streamer
-- [ ] Live reconnect test on a Linux streamer
+<!-- Pre-submit checklist (for Dayde, invisible when pasted):
+- Live reconnect test on a Windows streamer
+- Live reconnect test on a Linux streamer
+-->

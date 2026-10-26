@@ -1,5 +1,7 @@
 # fix(server_core): map every Index controller input in automatic button mapping
 
+Branch: `Dayde:upstream/fix-index-automatic-mapping` → `alvr-org:master` (base `adaa16ba`)
+
 ## Summary
 
 <!-- TODO(Dayde): write this summary in your own words — required by ALVR's AI policy -->
@@ -20,7 +22,7 @@ The same trackpad gap affects Vive wand and Pico G3 sources with Vive or Index e
 
 ## Root cause
 
-`automatic_bindings` has a hand-written section per physical button that assumes the source has Quest-like inputs. There is no branch for left A/B, no trackpad-to-trackpad passthrough, and `map_button_pair_automatic` has no `force` handling. The system/menu branches added in #2871 bind to a path the emulated controller does not register in the system → menu fallback, and rely on the driver's shared SteamVR path to deliver part of it (my guess is that `click, click` was a slip, but it may have been deliberate). Both the system and the menu → system branches also pick the destination system touch from the *source* set (`ct(s_set, ..)`) without checking that the emulated controller has it.
+`automatic_bindings` has a hand-written section per physical button that assumes the source has Quest-like inputs. There is no branch for left A/B, no trackpad-to-trackpad passthrough, and `map_button_pair_automatic` has no `force` handling. In the system → menu fallback added in #2871, the system click is bound to its own path, which the emulated controller does not register, so only the driver's shared SteamVR path delivers part of it (it is unclear whether `click, click` was intended). Both the system and the menu → system branches also pick the destination system touch from the *source* set (`ct(s_set, ..)`) without checking that the emulated controller has it.
 
 ## Fix
 
@@ -86,7 +88,7 @@ New unit tests in `input_mapping.rs`:
 - `index_system_buttons_forward_touch_and_act_as_menu`
 - `system_touch_targets_registered_inputs_only`: for every source profile across Quest, Pico 4, PSVR2, Index and Vive emulation, every binding to a system touch targets an input the emulated controller registers. It fails without commit 3 (checked by running it against the code before commit 3).
 
-The tests are about 430 lines and overlap somewhat (the exact-set Vive tests and the targeted Index tests). I can trim them on request; the Quest regression lock would stay.
+The tests are about 450 lines and overlap somewhat (the exact-set Vive tests and the targeted Index tests). I can trim them on request; the Quest regression lock would stay.
 
 ## Related issues/PRs
 
