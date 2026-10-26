@@ -21,6 +21,13 @@ use xr::SpaceLocationFlags;
 
 const IPD_CHANGE_EPS: f32 = 0.001;
 
+// Desktop Linux only. The interaction profile and the hand trackers are created before connecting
+// to the streamer, so these can't be streamer settings.
+// "index" (default), "vive" or "quest"
+const LINUX_CONTROLLER_PROFILE_ENV_VAR: &str = "ALVR_CONTROLLER_PROFILE";
+// "1" enables hand tracking
+const LINUX_HAND_TRACKING_ENV_VAR: &str = "ALVR_HAND_TRACKING";
+
 // Most OpenXR runtime, including Meta's one, do not follow perfectly the specification regarding
 // controller pose. The Z axis should point down through the center of the controller grip, the X
 // axis should go out perpendicular from the palm, and the position should be aligned roughtly with
@@ -217,8 +224,24 @@ impl InteractionContext {
             p if p.is_pico() => PICO4S_CONTROLLER_PROFILE_PATH,
             p if p.is_vive() => FOCUS3_CONTROLLER_PROFILE_PATH,
             p if p.is_yvr() => YVR_CONTROLLER_PROFILE_PATH,
+            // Desktop runtimes (Monado) usually drive Lighthouse controllers
+            Platform::LinuxPc => match std::env::var(LINUX_CONTROLLER_PROFILE_ENV_VAR).as_deref() {
+                Ok("vive") => VIVE_CONTROLLER_PROFILE_PATH,
+                Ok("quest") => QUEST_CONTROLLER_PROFILE_PATH,
+                Ok("index") | Err(_) => INDEX_CONTROLLER_PROFILE_PATH,
+                Ok(other) => {
+                    warn!(
+                        "Unknown {LINUX_CONTROLLER_PROFILE_ENV_VAR} \"{other}\", \
+                            using the Index controller profile"
+                    );
+                    INDEX_CONTROLLER_PROFILE_PATH
+                }
+            },
             _ => QUEST_CONTROLLER_PROFILE_PATH,
         };
+        if platform == Platform::LinuxPc {
+            info!("Controller interaction profile: {controllers_profile_path}");
+        }
         let controllers_profile_id = alvr_common::hash_string(controllers_profile_path);
 
         // Create actions:
@@ -384,14 +407,29 @@ impl InteractionContext {
                 .unwrap()
         });
 
-        let left_hand_tracker = check_ext_object(
-            "HandTracker (left)",
-            xr_session.create_hand_tracker(xr::Hand::LEFT),
-        );
-        let right_hand_tracker = check_ext_object(
-            "HandTracker (right)",
-            xr_session.create_hand_tracker(xr::Hand::RIGHT),
-        );
+        // Monado's hand tracking on desktop is usually derived from the Index controllers, which
+        // are better sent as controllers: the streamer switches to hand tracking whenever a hand
+        // skeleton is received
+        let hand_tracking_enabled = platform != Platform::LinuxPc
+            || std::env::var(LINUX_HAND_TRACKING_ENV_VAR).as_deref() == Ok("1");
+        if platform == Platform::LinuxPc {
+            info!("Hand tracking enabled: {hand_tracking_enabled}");
+        }
+
+        let (left_hand_tracker, right_hand_tracker) = if hand_tracking_enabled {
+            (
+                check_ext_object(
+                    "HandTracker (left)",
+                    xr_session.create_hand_tracker(xr::Hand::LEFT),
+                ),
+                check_ext_object(
+                    "HandTracker (right)",
+                    xr_session.create_hand_tracker(xr::Hand::RIGHT),
+                ),
+            )
+        } else {
+            (None, None)
+        };
 
         let eyes_combined =
             if extra_extensions::supports_eye_gaze_interaction(&xr_session, xr_system) {

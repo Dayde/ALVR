@@ -64,3 +64,13 @@ systemd default `TimeoutStopSec` of 90 s is fine). A second signal makes it exit
 | Variable                  | Effect                                                               |
 | ------------------------- | -------------------------------------------------------------------- |
 | `ALVR_VAAPI_DEVICE`       | DRM render node used for decoding, for example `/dev/dri/renderD129` |
+| `ALVR_CONTROLLER_PROFILE` | Controller interaction profile: `index` (default), `vive` or `quest` |
+| `ALVR_HAND_TRACKING`      | `1` enables hand tracking (off by default, see below)                |
+
+The controller profile and hand tracking are environment variables rather than streamer settings
+because the interaction profile and the hand trackers are set up when the OpenXR session is
+created, before the client connects to the streamer.
+
+Hand tracking is off by default because Monado derives a hand skeleton from tracked Index
+controllers, and the streamer switches to hand tracking emulation whenever it receives a skeleton.
+When it is enabled, the skeleton of a hand is still not sent while its controller is tracked.
