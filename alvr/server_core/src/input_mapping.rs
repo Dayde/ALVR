@@ -656,6 +656,32 @@ pub fn automatic_bindings(
         }
     }
 
+    // Trackpads. Skip destinations already driven by another input (e.g. thumbsticks on Vive wands)
+    for id in [
+        *LEFT_TRACKPAD_X_ID,
+        *LEFT_TRACKPAD_Y_ID,
+        *LEFT_TRACKPAD_CLICK_ID,
+        *LEFT_TRACKPAD_TOUCH_ID,
+        *LEFT_TRACKPAD_FORCE_ID,
+        *RIGHT_TRACKPAD_X_ID,
+        *RIGHT_TRACKPAD_Y_ID,
+        *RIGHT_TRACKPAD_CLICK_ID,
+        *RIGHT_TRACKPAD_TOUCH_ID,
+        *RIGHT_TRACKPAD_FORCE_ID,
+    ] {
+        let destination_bound = bindings
+            .values()
+            .flatten()
+            .any(|target| target.destination == id);
+        if s_set.contains(&id)
+            && d_set.contains(&id)
+            && !destination_bound
+            && !bindings.contains_key(&id)
+        {
+            bindings.insert(id, vec![passthrough(id)]);
+        }
+    }
+
     bindings
 }
 
@@ -988,6 +1014,110 @@ mod tests {
     }
 
     #[test]
+    fn vive_to_index_bindings() {
+        assert_bindings(
+            *VIVE_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ValveIndex,
+            &[
+                "left/input/menu/click -> left/input/system/click (passthrough)",
+                "left/input/squeeze/click -> left/input/squeeze/value (binary 0..1)",
+                "left/input/system/click -> left/input/system/click (passthrough)",
+                "left/input/trackpad/touch -> left/input/trackpad/touch (passthrough)",
+                "left/input/trackpad/x -> left/input/trackpad/x (passthrough)",
+                "left/input/trackpad/y -> left/input/trackpad/y (passthrough)",
+                "left/input/trigger/click -> left/input/trigger/click (passthrough)",
+                "left/input/trigger/click -> left/input/trigger/touch (passthrough)",
+                "left/input/trigger/value -> left/input/trigger/touch (threshold 0.1)",
+                "left/input/trigger/value -> left/input/trigger/value (remap 0.1..1)",
+                "right/input/menu/click -> right/input/system/click (passthrough)",
+                "right/input/squeeze/click -> right/input/squeeze/value (binary 0..1)",
+                "right/input/system/click -> right/input/system/click (passthrough)",
+                "right/input/trackpad/touch -> right/input/trackpad/touch (passthrough)",
+                "right/input/trackpad/x -> right/input/trackpad/x (passthrough)",
+                "right/input/trackpad/y -> right/input/trackpad/y (passthrough)",
+                "right/input/trigger/click -> right/input/trigger/click (passthrough)",
+                "right/input/trigger/click -> right/input/trigger/touch (passthrough)",
+                "right/input/trigger/value -> right/input/trigger/touch (threshold 0.1)",
+                "right/input/trigger/value -> right/input/trigger/value (remap 0.1..1)",
+            ],
+        );
+    }
+
+    #[test]
+    fn vive_to_quest_bindings() {
+        assert_bindings(
+            *VIVE_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::Quest2Touch,
+            &[
+                "left/input/menu/click -> left/input/menu/click (passthrough)",
+                "left/input/squeeze/click -> left/input/squeeze/value (binary 0..1)",
+                "left/input/system/click -> left/input/system/click (passthrough)",
+                "left/input/trigger/click -> left/input/trigger/touch (passthrough)",
+                "left/input/trigger/value -> left/input/trigger/touch (threshold 0.1)",
+                "left/input/trigger/value -> left/input/trigger/value (remap 0.1..1)",
+                "right/input/menu/click -> right/input/system/click (passthrough)",
+                "right/input/squeeze/click -> right/input/squeeze/value (binary 0..1)",
+                "right/input/system/click -> right/input/system/click (passthrough)",
+                "right/input/trigger/click -> right/input/trigger/touch (passthrough)",
+                "right/input/trigger/value -> right/input/trigger/touch (threshold 0.1)",
+                "right/input/trigger/value -> right/input/trigger/value (remap 0.1..1)",
+            ],
+        );
+    }
+
+    #[test]
+    fn vive_to_vive_bindings() {
+        assert_bindings(
+            *VIVE_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ViveWand,
+            &[
+                "left/input/menu/click -> left/input/menu/click (passthrough)",
+                "left/input/squeeze/click -> left/input/squeeze/click (passthrough)",
+                "left/input/system/click -> left/input/system/click (passthrough)",
+                "left/input/trackpad/click -> left/input/trackpad/click (passthrough)",
+                "left/input/trackpad/touch -> left/input/trackpad/touch (passthrough)",
+                "left/input/trackpad/x -> left/input/trackpad/x (passthrough)",
+                "left/input/trackpad/y -> left/input/trackpad/y (passthrough)",
+                "left/input/trigger/click -> left/input/trigger/click (passthrough)",
+                "left/input/trigger/value -> left/input/trigger/value (passthrough)",
+                "right/input/menu/click -> right/input/menu/click (passthrough)",
+                "right/input/squeeze/click -> right/input/squeeze/click (passthrough)",
+                "right/input/system/click -> right/input/system/click (passthrough)",
+                "right/input/trackpad/click -> right/input/trackpad/click (passthrough)",
+                "right/input/trackpad/touch -> right/input/trackpad/touch (passthrough)",
+                "right/input/trackpad/x -> right/input/trackpad/x (passthrough)",
+                "right/input/trackpad/y -> right/input/trackpad/y (passthrough)",
+                "right/input/trigger/click -> right/input/trigger/click (passthrough)",
+                "right/input/trigger/value -> right/input/trigger/value (passthrough)",
+            ],
+        );
+    }
+
+    #[test]
+    fn index_to_index_binds_every_input() {
+        let index_set = &CONTROLLER_PROFILE_INFO
+            .get(&INDEX_CONTROLLER_PROFILE_ID)
+            .unwrap()
+            .button_set;
+        let bindings = automatic_bindings(index_set, index_set, &test_config());
+
+        for id in index_set {
+            let path = BUTTON_INFO.get(id).unwrap().path;
+            assert!(
+                bindings.get(id).is_some_and(|targets| !targets.is_empty()),
+                "{path} is not mapped"
+            );
+            assert!(
+                bindings
+                    .values()
+                    .flatten()
+                    .any(|target| target.destination == *id),
+                "{path} is never set"
+            );
+        }
+    }
+
+    #[test]
     fn index_to_quest_binds_menu_and_left_buttons() {
         let descriptions = binding_descriptions(
             *INDEX_CONTROLLER_PROFILE_ID,
@@ -1008,6 +1138,56 @@ mod tests {
             "right/input/system/click -> right/input/system/click (passthrough)",
         ] {
             assert!(descriptions.contains(expected), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn index_to_vive_keeps_thumbsticks_on_trackpads() {
+        let descriptions = binding_descriptions(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ViveWand,
+        );
+
+        // Vive trackpads are already driven by the thumbsticks, the Index trackpads must not
+        // fight over them
+        assert!(!descriptions.iter().any(|description| {
+            description.starts_with("left/input/trackpad/")
+                || description.starts_with("right/input/trackpad/")
+        }));
+        for expected in [
+            "left/input/thumbstick/x -> left/input/trackpad/x (passthrough)",
+            "right/input/thumbstick/x -> right/input/trackpad/x (passthrough)",
+            "left/input/a/click -> left/input/trackpad/click (passthrough)",
+            "right/input/a/click -> right/input/trackpad/click (passthrough)",
+        ] {
+            assert!(descriptions.contains(expected), "missing {expected}");
+        }
+    }
+
+    #[test]
+    fn index_bindings_target_registered_inputs_only() {
+        let index_set = &CONTROLLER_PROFILE_INFO
+            .get(&INDEX_CONTROLLER_PROFILE_ID)
+            .unwrap()
+            .button_set;
+
+        for emulation_mode in [
+            ControllersEmulationMode::Quest2Touch,
+            ControllersEmulationMode::Pico4,
+            ControllersEmulationMode::PSVR2Sense,
+            ControllersEmulationMode::ValveIndex,
+            ControllersEmulationMode::ViveWand,
+        ] {
+            let destination_set = registered_button_set(&emulation_mode);
+            let bindings = automatic_bindings(index_set, &destination_set, &test_config());
+
+            for target in bindings.values().flatten() {
+                assert!(
+                    destination_set.contains(&target.destination),
+                    "{} is not registered",
+                    BUTTON_INFO.get(&target.destination).unwrap().path
+                );
+            }
         }
     }
 
