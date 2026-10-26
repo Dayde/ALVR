@@ -1,5 +1,5 @@
 use crate::{CONTROL_PORT, LOCAL_IP};
-use alvr_common::{ConResult, HandleTryAgain, ToCon, anyhow::Result, con_bail};
+use alvr_common::{ConResult, ConnectionError, HandleTryAgain, ToCon, anyhow::Result, con_bail};
 use alvr_session::{DscpTos, SocketBufferConfig};
 use bincode::config;
 use serde::{Serialize, de::DeserializeOwned};
@@ -13,6 +13,55 @@ use std::{
 
 // This corresponds to the length of the payload
 const FRAMED_PREFIX_LENGTH: usize = mem::size_of::<u32>();
+
+// Lets a sequence of socket reads wait until a deadline, whatever the socket read timeout. The read
+// timeout is shortened only for the last wait, so that it doesn't block past the deadline, and is
+// restored on drop
+struct ReadDeadline<'a> {
+    socket: &'a TcpStream,
+    deadline: Instant,
+    original_read_timeout: Option<Option<Duration>>,
+}
+
+impl<'a> ReadDeadline<'a> {
+    fn new(socket: &'a TcpStream, timeout: Duration) -> Self {
+        Self {
+            socket,
+            deadline: Instant::now() + timeout,
+            original_read_timeout: None,
+        }
+    }
+
+    // Must be called after a read returned without completing the packet (timed out or partial
+    // data). Returns `TryAgain` if the deadline has passed, otherwise makes sure that the next read
+    // cannot block past the deadline
+    fn prepare_retry(&mut self) -> ConResult {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return alvr_common::try_again();
+        }
+
+        let read_timeout = match self.original_read_timeout {
+            Some(read_timeout) => read_timeout,
+            None => *self
+                .original_read_timeout
+                .insert(self.socket.read_timeout().to_con()?),
+        };
+        if read_timeout.is_none_or(|read_timeout| remaining < read_timeout) {
+            self.socket.set_read_timeout(Some(remaining)).to_con()?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Drop for ReadDeadline<'_> {
+    fn drop(&mut self) {
+        if let Some(read_timeout) = self.original_read_timeout {
+            self.socket.set_read_timeout(read_timeout).ok();
+        }
+    }
+}
 
 pub fn bind(
     timeout: Duration,
@@ -99,25 +148,30 @@ fn framed_send<S: Serialize>(
     Ok(())
 }
 
+// Waits for a packet until `timeout` expires, even if the socket read timeout is shorter. When the
+// caller keeps `buffer` and `recv_cursor` between calls, a partially received packet is completed by
+// the next call
 fn framed_recv<R: DeserializeOwned>(
-    socket: &mut TcpStream,
+    mut socket: &TcpStream,
     buffer: &mut Vec<u8>,
     recv_cursor: &mut Option<usize>,
     timeout: Duration,
 ) -> ConResult<R> {
-    let deadline = Instant::now() + timeout;
+    let mut deadline = ReadDeadline::new(socket, timeout);
 
     let recv_cursor_ref = if let Some(cursor) = recv_cursor {
         cursor
     } else {
         let mut payload_size_bytes = [0; FRAMED_PREFIX_LENGTH];
 
+        // A timed out peek only means that no data arrived yet: the socket read timeout can be
+        // shorter than the requested timeout, so keep waiting until the deadline
         loop {
-            let count = socket.peek(&mut payload_size_bytes).handle_try_again()?;
-            if count == FRAMED_PREFIX_LENGTH {
-                break;
-            } else if Instant::now() > deadline {
-                return alvr_common::try_again();
+            match socket.peek(&mut payload_size_bytes).handle_try_again() {
+                Ok(FRAMED_PREFIX_LENGTH) => break,
+                Ok(0) => con_bail!("Connection closed by peer"),
+                Ok(_) | Err(ConnectionError::TryAgain(_)) => deadline.prepare_retry()?,
+                Err(e) => return Err(e),
             }
         }
 
@@ -128,15 +182,21 @@ fn framed_recv<R: DeserializeOwned>(
     };
 
     loop {
-        *recv_cursor_ref += socket
+        match socket
             .read(&mut buffer[*recv_cursor_ref..])
-            .handle_try_again()?;
+            .handle_try_again()
+        {
+            Ok(0) => con_bail!("Connection closed by peer"),
+            Ok(count) => *recv_cursor_ref += count,
+            Err(ConnectionError::TryAgain(_)) => (),
+            Err(e) => return Err(e),
+        }
 
         if *recv_cursor_ref == buffer.len() {
             break;
-        } else if Instant::now() > deadline {
-            return alvr_common::try_again();
         }
+
+        deadline.prepare_retry()?;
     }
 
     let (packet, _) =
@@ -170,7 +230,7 @@ pub struct ControlSocketReceiver<T> {
 impl<R: DeserializeOwned> ControlSocketReceiver<R> {
     pub fn recv(&mut self, timeout: Duration) -> ConResult<R> {
         framed_recv(
-            &mut self.inner,
+            &self.inner,
             &mut self.buffer,
             &mut self.recv_cursor,
             timeout,
@@ -214,7 +274,7 @@ impl ProtoControlSocket {
     }
 
     pub fn recv<R: DeserializeOwned>(&mut self, timeout: Duration) -> ConResult<R> {
-        framed_recv(&mut self.inner, &mut vec![], &mut None, timeout)
+        framed_recv(&self.inner, &mut vec![], &mut None, timeout)
     }
 
     pub fn split<S: Serialize, R: DeserializeOwned>(
@@ -236,5 +296,80 @@ impl ProtoControlSocket {
                 _phantom: PhantomData,
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+
+    fn socket_pair(receiver_read_timeout: Duration) -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let sender = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (receiver, _) = listener.accept().unwrap();
+        receiver
+            .set_read_timeout(Some(receiver_read_timeout))
+            .unwrap();
+
+        (sender, receiver)
+    }
+
+    #[test]
+    fn framed_recv_waits_past_socket_read_timeout() {
+        let (mut sender, receiver) = socket_pair(Duration::from_millis(100));
+
+        let send_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            framed_send(&mut sender, &mut vec![], &42_u32).unwrap();
+
+            // Keep the connection open until the packet is received
+            sender
+        });
+
+        let start = Instant::now();
+        let maybe_packet =
+            framed_recv::<u32>(&receiver, &mut vec![], &mut None, Duration::from_secs(2));
+        let elapsed = start.elapsed();
+
+        assert!(matches!(maybe_packet, Ok(42)));
+        assert!(elapsed >= Duration::from_millis(250), "{elapsed:?}");
+        assert_eq!(
+            receiver.read_timeout().unwrap(),
+            Some(Duration::from_millis(100))
+        );
+
+        send_thread.join().unwrap();
+    }
+
+    #[test]
+    fn framed_recv_times_out_at_deadline() {
+        // The timeout is not a multiple of the socket read timeout: without shortening the last
+        // read, recv would return only after 600 ms
+        let read_timeout = Duration::from_millis(300);
+        let timeout = Duration::from_millis(400);
+        let (_sender, receiver) = socket_pair(read_timeout);
+
+        let start = Instant::now();
+        let maybe_packet = framed_recv::<u32>(&receiver, &mut vec![], &mut None, timeout);
+        let elapsed = start.elapsed();
+
+        assert!(matches!(maybe_packet, Err(ConnectionError::TryAgain(_))));
+        assert!(elapsed >= timeout, "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(550), "{elapsed:?}");
+        assert_eq!(receiver.read_timeout().unwrap(), Some(read_timeout));
+    }
+
+    #[test]
+    fn framed_recv_fails_fast_when_peer_closes() {
+        let (sender, receiver) = socket_pair(Duration::from_millis(100));
+        drop(sender);
+
+        let start = Instant::now();
+        let maybe_packet =
+            framed_recv::<u32>(&receiver, &mut vec![], &mut None, Duration::from_secs(5));
+
+        assert!(matches!(maybe_packet, Err(ConnectionError::Other(_))));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 }
