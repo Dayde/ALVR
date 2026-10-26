@@ -152,10 +152,7 @@ fn connection_pipeline(
         }
     };
 
-    let mut connection_state_lock = ctx.state.write();
     let disconnect_notif = Arc::new(Condvar::new());
-
-    *connection_state_lock = ConnectionState::Connecting;
 
     // TODO: Don't fetch cpal sample rate, get directly from AAudio
     let microphone_sample_rate =
@@ -263,6 +260,19 @@ fn connection_pipeline(
     )?;
 
     info!("Connected to server");
+
+    // The connection state is locked only now so that pause() is not blocked by the network waits
+    // of the handshake. pause() changes the lifecycle state while holding this lock: either it
+    // already did and we stop here, or it will wait for the stream to stop. A Disconnecting state
+    // written by report_fatal_decoder_error() during the handshake is overwritten below, which is
+    // harmless since there is no stream yet
+    let mut connection_state_lock = ctx.state.write();
+    if *lifecycle_state.read() != LifecycleState::Resumed {
+        info!("Connection abandoned because the client was paused or is shutting down");
+        return Ok(());
+    }
+
+    *connection_state_lock = ConnectionState::Connecting;
 
     let mut video_receiver =
         stream_socket.subscribe_to_stream::<VideoPacketHeader>(VIDEO, MAX_UNREAD_PACKETS);
