@@ -21,6 +21,10 @@ use wgpu::{
     TextureUsages, TextureView,
 };
 
+// Same library as the one opened by wgpu
+#[cfg(target_os = "linux")]
+const EGL_LIBRARY_NAME: &str = "libEGL.so.1";
+
 pub const SDR_FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
 pub const SDR_FORMAT_GL: u32 = gl::RGBA8;
 pub const GL_TEXTURE_EXTERNAL_OES: u32 = 0x8D65;
@@ -36,6 +40,10 @@ type CreateImageFn = unsafe extern "C" fn(
 type DestroyImageFn = unsafe extern "C" fn(egl::EGLDisplay, egl::EGLImage) -> egl::Boolean;
 type GetNativeClientBufferFn = unsafe extern "C" fn(*const c_void) -> egl::EGLClientBuffer;
 type ImageTargetTexture2DFn = unsafe extern "C" fn(egl::Enum, egl::EGLImage);
+
+#[cfg(target_os = "linux")]
+pub type EglGetProcAddressFn =
+    unsafe extern "system" fn(*const std::ffi::c_char) -> Option<unsafe extern "system" fn()>;
 
 pub struct HandData {
     pub grip_motion: Option<DeviceMotion>,
@@ -231,6 +239,14 @@ pub struct GraphicsContext {
 
     #[cfg(target_os = "linux")]
     dmabuf_import_support: dmabuf::DmabufImportSupport,
+
+    /// eglGetProcAddress of the EGL library used by this context, needed by XR_MNDX_egl_enable.
+    /// None if the library cannot be opened again.
+    #[cfg(target_os = "linux")]
+    pub egl_get_proc_address: Option<EglGetProcAddressFn>,
+    // Keeps egl_get_proc_address valid
+    #[cfg(target_os = "linux")]
+    _egl_library: Option<libloading::Library>,
 }
 
 impl GraphicsContext {
@@ -355,6 +371,23 @@ impl GraphicsContext {
             })
         };
 
+        // wgpu loaded this library already, so it can only fail if wgpu found EGL under another
+        // name. The session creation then fails with an error.
+        #[cfg(target_os = "linux")]
+        let (egl_library, egl_get_proc_address) = unsafe {
+            match libloading::Library::new(EGL_LIBRARY_NAME) {
+                Ok(library) => {
+                    let maybe_get_proc_address = library
+                        .get::<EglGetProcAddressFn>(c"eglGetProcAddress".to_bytes_with_nul())
+                        .ok()
+                        .map(|symbol| *symbol);
+
+                    (Some(library), maybe_get_proc_address)
+                }
+                Err(_) => (None, None),
+            }
+        };
+
         Self {
             _instance: instance,
             adapter,
@@ -371,6 +404,10 @@ impl GraphicsContext {
             image_target_texture_2d,
             #[cfg(target_os = "linux")]
             dmabuf_import_support,
+            #[cfg(target_os = "linux")]
+            egl_get_proc_address,
+            #[cfg(target_os = "linux")]
+            _egl_library: egl_library,
         }
     }
 
