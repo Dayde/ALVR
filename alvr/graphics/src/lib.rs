@@ -1,7 +1,11 @@
+#[cfg(target_os = "linux")]
+mod dmabuf;
 mod lobby;
 mod staging;
 mod stream;
 
+#[cfg(target_os = "linux")]
+pub use dmabuf::*;
 pub use lobby::*;
 pub use stream::*;
 
@@ -224,6 +228,9 @@ pub struct GraphicsContext {
     // Only available on Android
     get_native_client_buffer: Option<GetNativeClientBufferFn>,
     image_target_texture_2d: ImageTargetTexture2DFn,
+
+    #[cfg(target_os = "linux")]
+    dmabuf_import_support: dmabuf::DmabufImportSupport,
 }
 
 impl GraphicsContext {
@@ -331,6 +338,23 @@ impl GraphicsContext {
             })
         };
 
+        #[cfg(target_os = "linux")]
+        let dmabuf_import_support = unsafe {
+            adapter.as_hal::<api::Gles, _, _>(|raw_adapter| {
+                let egl_extensions = raw_adapter
+                    .and_then(|raw_adapter| raw_adapter.adapter_context().egl_instance())
+                    .and_then(|egl_instance| {
+                        egl_instance
+                            .query_string(Some(egl_display), egl::EXTENSIONS)
+                            .ok()
+                    })
+                    .map(|extensions| extensions.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+
+                dmabuf::DmabufImportSupport::new(&egl_extensions, &gl_context)
+            })
+        };
+
         Self {
             _instance: instance,
             adapter,
@@ -345,6 +369,8 @@ impl GraphicsContext {
             destroy_image,
             get_native_client_buffer,
             image_target_texture_2d,
+            #[cfg(target_os = "linux")]
+            dmabuf_import_support,
         }
     }
 
