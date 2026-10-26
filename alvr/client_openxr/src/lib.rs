@@ -9,7 +9,9 @@ mod stream;
 use crate::stream::ParsedStreamConfig;
 use alvr_client_core::{ClientCapabilities, ClientCoreContext, ClientCoreEvent};
 use alvr_common::{
-    Fov, HAND_LEFT_ID, Pose, debug, error,
+    Fov, HAND_LEFT_ID, Pose,
+    anyhow::{Context, Result, bail},
+    debug, error,
     glam::{Quat, UVec2, Vec3},
     info,
     parking_lot::RwLock,
@@ -25,8 +27,20 @@ use interaction::{InteractionContext, InteractionSourcesConfig};
 use lobby::Lobby;
 use openxr as xr;
 use passthrough::PassthroughLayer;
-use std::{ffi::CStr, path::Path, rc::Rc, sync::Arc, thread, time::Duration};
+use std::{
+    ffi::CStr,
+    path::Path,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
+};
 use stream::StreamContext;
+
+static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 fn from_xr_vec3(v: xr::Vector3f) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
@@ -144,20 +158,27 @@ fn create_session(
     xr_instance: &xr::Instance,
     xr_system: xr::SystemId,
     graphics_context: &GraphicsContext,
-) -> (
+) -> Result<(
     xr::Session<xr::OpenGlEs>,
     xr::FrameWaiter,
     xr::FrameStream<xr::OpenGlEs>,
-) {
+)> {
     #[allow(unreachable_code)]
     unsafe {
-        xr_instance
-            .create_session(xr_system, &graphics::session_create_info(graphics_context))
-            .unwrap()
+        Ok(xr_instance
+            .create_session(xr_system, &graphics::session_create_info(graphics_context))?)
     }
 }
 
-pub fn entry_point() {
+/// Asks the client to end the OpenXR session and return from entry_point(). It only sets an atomic
+/// flag, so it can be called from a signal handler.
+pub fn request_exit() {
+    EXIT_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Runs the client until the OpenXR instance is lost or request_exit() is called. Returns an error
+/// if the OpenXR runtime is not available or cannot be used.
+pub fn entry_point() -> Result<()> {
     alvr_client_core::init_logging();
 
     const LEGACY_OPENXR_VERSION: xr::Version = xr::Version::new(1, 0, 34);
@@ -175,14 +196,16 @@ pub fn entry_point() {
         p if p.is_yvr() => ("_yvr", LEGACY_OPENXR_VERSION),
         _ => ("", CURRENT_OPENXR_VERSION),
     };
-    let xr_entry = unsafe {
-        xr::Entry::load_from(Path::new(&format!("libopenxr_loader{loader_suffix}.so"))).unwrap()
-    };
+    let loader_fname = format!("libopenxr_loader{loader_suffix}.so");
+    let xr_entry = unsafe { xr::Entry::load_from(Path::new(&loader_fname)) }
+        .with_context(|| format!("Cannot load the OpenXR loader {loader_fname}"))?;
 
     #[cfg(target_os = "android")]
     xr_entry.initialize_android_loader().unwrap();
 
-    let available_exts = xr_entry.enumerate_extensions().unwrap();
+    let available_exts = xr_entry
+        .enumerate_extensions()
+        .context("Cannot query the OpenXR runtime, is it running?")?;
     info!(
         "OpenXR available extensions: {:#?}",
         available_exts
@@ -193,7 +216,9 @@ pub fn entry_point() {
     );
 
     // todo: switch to vulkan
-    assert!(available_exts.khr_opengl_es_enable);
+    if !available_exts.khr_opengl_es_enable {
+        bail!("The OpenXR runtime does not support XR_KHR_opengl_es_enable");
+    }
 
     let mut selected_exts = xr::ExtensionSet::default();
     selected_exts.bd_body_tracking = true;
@@ -264,7 +289,7 @@ pub fn entry_point() {
             &selected_exts,
             &[],
         )
-        .unwrap();
+        .context("Cannot create the OpenXR instance")?;
 
     let platform = alvr_system_info::platform(
         xr_instance
@@ -284,7 +309,7 @@ pub fn entry_point() {
     'session_loop: loop {
         let xr_system = xr_instance
             .system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)
-            .unwrap();
+            .context("No headset found by the OpenXR runtime")?;
 
         // mandatory call
         let _ = xr_instance
@@ -292,7 +317,8 @@ pub fn entry_point() {
             .unwrap();
 
         let (xr_session, mut xr_frame_waiter, mut xr_frame_stream) =
-            create_session(&xr_instance, xr_system, &graphics_context);
+            create_session(&xr_instance, xr_system, &graphics_context)
+                .context("Cannot create the OpenXR session")?;
 
         let views_config = xr_instance
             .enumerate_view_configuration_views(
@@ -407,6 +433,7 @@ pub fn entry_point() {
             .select_sources(&lobby_interaction_sources);
 
         let mut session_running = false;
+        let mut exit_sent = false;
         let mut stream_context = None::<StreamContext>;
         let mut passthrough_layer = None;
 
@@ -441,6 +468,10 @@ pub fn entry_point() {
                             xr_session.end().ok();
                         }
                         xr::SessionState::EXITING | xr::SessionState::LOSS_PENDING => {
+                            if EXIT_REQUESTED.load(Ordering::Relaxed) {
+                                break 'session_loop;
+                            }
+
                             break 'render_loop;
                         }
                         _ => (),
@@ -477,6 +508,17 @@ pub fn entry_point() {
                         core_context.send_proximity_state(event.is_user_present());
                     }
                     _ => (),
+                }
+            }
+
+            if EXIT_REQUESTED.load(Ordering::Relaxed) {
+                if !session_running {
+                    break 'session_loop;
+                } else if !exit_sent {
+                    info!("Exit requested, ending the OpenXR session");
+                    // The runtime answers with the STOPPING and EXITING states
+                    xr_session.request_exit().ok();
+                    exit_sent = true;
                 }
             }
 
@@ -644,6 +686,8 @@ pub fn entry_point() {
     }
 
     // grapics_context is dropped here
+
+    Ok(())
 }
 
 #[allow(unused)]
@@ -664,7 +708,7 @@ fn android_main(app: android_activity::AndroidApp) {
         let context = ndk_context::android_context();
         let vm = unsafe { jni::JavaVM::from_raw(context.vm().cast()) };
         vm.attach_current_thread(|_env| {
-            entry_point();
+            entry_point().unwrap();
 
             jni::errors::Result::Ok(())
         })

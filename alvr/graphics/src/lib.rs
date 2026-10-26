@@ -221,7 +221,8 @@ pub struct GraphicsContext {
 
     create_image: CreateImageFn,
     destroy_image: DestroyImageFn,
-    get_native_client_buffer: GetNativeClientBufferFn,
+    // Only available on Android
+    get_native_client_buffer: Option<GetNativeClientBufferFn>,
     image_target_texture_2d: ImageTargetTexture2DFn,
 }
 
@@ -313,7 +314,7 @@ impl GraphicsContext {
                 let create_image: CreateImageFn = mem::transmute(get_fn_ptr(CREATE_IMAGE_FN_STR));
                 let destroy_image: DestroyImageFn =
                     mem::transmute(get_fn_ptr(DESTROY_IMAGE_FN_STR));
-                let get_native_client_buffer: GetNativeClientBufferFn =
+                let get_native_client_buffer: Option<GetNativeClientBufferFn> =
                     mem::transmute(get_fn_ptr(GET_NATIVE_CLIENT_BUFFER_FN_STR));
                 let image_target_texture_2d: ImageTargetTexture2DFn =
                     mem::transmute(get_fn_ptr(IMAGE_TARGET_TEXTURE_2D_FN_STR));
@@ -386,8 +387,10 @@ impl GraphicsContext {
     ) {
         const EGL_NATIVE_BUFFER_ANDROID: u32 = 0x3140;
 
-        if !buffer.is_null() {
-            let client_buffer = unsafe { (self.get_native_client_buffer)(buffer) };
+        if !buffer.is_null()
+            && let Some(get_native_client_buffer) = self.get_native_client_buffer
+        {
+            let client_buffer = unsafe { get_native_client_buffer(buffer) };
             check_error(&self.gl_context, "get_native_client_buffer");
 
             let image = unsafe {
