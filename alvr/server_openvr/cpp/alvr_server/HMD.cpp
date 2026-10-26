@@ -223,6 +223,8 @@ void Hmd::StartStreaming() {
 
     vr::VRDriverInput()->UpdateBooleanComponent(m_proximity, true, 0.0);
 
+    m_poseHistory->Clear();
+
     if (m_streamComponentsInitialized) {
         return;
     }
