@@ -163,6 +163,11 @@ fn create_session(
     xr::FrameWaiter,
     xr::FrameStream<xr::OpenGlEs>,
 )> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        graphics::create_egl_session(xr_instance, xr_system, graphics_context)
+    }
+    #[cfg(not(target_os = "linux"))]
     #[allow(unreachable_code)]
     unsafe {
         Ok(xr_instance
@@ -196,6 +201,10 @@ pub fn entry_point() -> Result<()> {
         p if p.is_yvr() => ("_yvr", LEGACY_OPENXR_VERSION),
         _ => ("", CURRENT_OPENXR_VERSION),
     };
+    // On desktop Linux the loader is installed system-wide (for example libopenxr-loader1)
+    #[cfg(target_os = "linux")]
+    let loader_fname = format!("libopenxr_loader{loader_suffix}.so.1");
+    #[cfg(not(target_os = "linux"))]
     let loader_fname = format!("libopenxr_loader{loader_suffix}.so");
     let xr_entry = unsafe { xr::Entry::load_from(Path::new(&loader_fname)) }
         .with_context(|| format!("Cannot load the OpenXR loader {loader_fname}"))?;
@@ -218,6 +227,11 @@ pub fn entry_point() -> Result<()> {
     // todo: switch to vulkan
     if !available_exts.khr_opengl_es_enable {
         bail!("The OpenXR runtime does not support XR_KHR_opengl_es_enable");
+    }
+    // Desktop runtimes (Monado) take our EGL context through XR_MNDX_egl_enable
+    #[cfg(target_os = "linux")]
+    if !available_exts.mndx_egl_enable {
+        bail!("The OpenXR runtime does not support XR_MNDX_egl_enable");
     }
 
     let mut selected_exts = xr::ExtensionSet::default();
@@ -251,6 +265,10 @@ pub fn entry_point() -> Result<()> {
     selected_exts.meta_body_tracking_full_body = true;
     selected_exts.meta_simultaneous_hands_and_controllers = true;
     selected_exts.meta_detached_controllers = true;
+    #[cfg(target_os = "linux")]
+    {
+        selected_exts.mndx_egl_enable = true;
+    }
     selected_exts.other = [
         META_BODY_TRACKING_FIDELITY_EXTENSION_NAME,
         BD_MOTION_TRACKING_EXTENSION_NAME,
@@ -277,19 +295,36 @@ pub fn entry_point() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    let xr_instance = xr_entry
-        .create_instance(
-            &xr::ApplicationInfo {
-                application_name: "ALVR Client",
-                application_version: 0,
-                engine_name: "ALVR",
-                engine_version: 0,
-                api_version: openxr_version,
-            },
-            &selected_exts,
-            &[],
-        )
-        .context("Cannot create the OpenXR instance")?;
+    let application_info = |api_version| xr::ApplicationInfo {
+        application_name: "ALVR Client",
+        application_version: 0,
+        engine_name: "ALVR",
+        engine_version: 0,
+        api_version,
+    };
+    let maybe_xr_instance =
+        xr_entry.create_instance(&application_info(openxr_version), &selected_exts, &[]);
+    // OpenXR 1.0 loaders and runtimes (for example loader 1.0.20 and Monado 21 on Ubuntu 24.04)
+    // reject instances for OpenXR 1.1, and the client does not need any OpenXR 1.1 function.
+    // Android runtimes are matched to their version above instead.
+    #[cfg(not(target_os = "android"))]
+    let maybe_xr_instance = match maybe_xr_instance {
+        Err(xr::sys::Result::ERROR_API_VERSION_UNSUPPORTED)
+            if openxr_version != LEGACY_OPENXR_VERSION =>
+        {
+            alvr_common::warn!(
+                "The OpenXR runtime does not support OpenXR {openxr_version}, using \
+                {LEGACY_OPENXR_VERSION}"
+            );
+            xr_entry.create_instance(
+                &application_info(LEGACY_OPENXR_VERSION),
+                &selected_exts,
+                &[],
+            )
+        }
+        result => result,
+    };
+    let xr_instance = maybe_xr_instance.context("Cannot create the OpenXR instance")?;
 
     let platform = alvr_system_info::platform(
         xr_instance
@@ -303,6 +338,17 @@ pub fn entry_point() -> Result<()> {
     );
 
     let graphics_context = Rc::new(GraphicsContext::new_gl());
+
+    // The decoded frames can only be rendered through dma-buf import on Linux
+    #[cfg(target_os = "linux")]
+    graphics_context
+        .check_dmabuf_import_support()
+        .context("Cannot render decoded video frames")?;
+
+    // Desktop GPUs differ in what VAAPI can decode, and the streamer only falls back from AV1 and
+    // 10 bit when the client doesn't advertise them
+    #[cfg(target_os = "linux")]
+    let decoder_capabilities = alvr_client_core::video_decoder::probe_decoder_capabilities();
 
     let mut last_lobby_message = String::new();
 
@@ -350,6 +396,18 @@ pub fn entry_point() -> Result<()> {
                 .unwrap();
         }
 
+        #[cfg(target_os = "linux")]
+        let (encoder_10_bits, encoder_av1) =
+            (decoder_capabilities.ten_bits, decoder_capabilities.av1);
+        #[cfg(not(target_os = "linux"))]
+        let (encoder_10_bits, encoder_av1) = (
+            platform != Platform::Unknown,
+            matches!(
+                platform,
+                Platform::Quest3 | Platform::Quest3S | Platform::Pico4Ultra
+            ),
+        );
+
         let capabilities = ClientCapabilities {
             platform,
             default_view_resolution,
@@ -357,11 +415,8 @@ pub fn entry_point() -> Result<()> {
             refresh_rates,
             foveated_encoding: platform != Platform::Unknown,
             encoder_high_profile: platform != Platform::Unknown,
-            encoder_10_bits: platform != Platform::Unknown,
-            encoder_av1: matches!(
-                platform,
-                Platform::Quest3 | Platform::Quest3S | Platform::Pico4Ultra
-            ),
+            encoder_10_bits,
+            encoder_av1,
             prefer_10bit: false,
             preferred_encoding_gamma: 1.0,
             prefer_hdr: false,

@@ -6,7 +6,8 @@ authors.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib for the Android app, rlib for the desktop Linux client (alvr_client_linux)
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 alvr_common.workspace = true
