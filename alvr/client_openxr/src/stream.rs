@@ -12,7 +12,9 @@ use alvr_common::{
     anyhow::Result,
     error,
     glam::{UVec2, Vec2},
+    info,
     parking_lot::RwLock,
+    warn,
 };
 use alvr_graphics::{GraphicsContext, StreamRenderer, StreamViewParams};
 use alvr_packets::{ClientStreamConfig, RealTimeConfig, TrackingData};
@@ -31,6 +33,8 @@ use std::{
 };
 
 const DECODER_MAX_TIMEOUT_MULTIPLIER: f32 = 0.8;
+// Furthest a frame's display time may be after the predicted vsync time
+const MAX_DISPLAY_TIME_AHEAD: Duration = Duration::from_millis(100);
 
 pub struct ParsedStreamConfig {
     pub view_resolution: UVec2,
@@ -95,6 +99,7 @@ pub struct StreamContext {
     renderer: StreamRenderer,
     decoder: Option<(VideoDecoderConfig, VideoDecoderSource)>,
     use_custom_reprojection: bool,
+    display_times_ahead_count: u64,
 }
 
 impl StreamContext {
@@ -241,6 +246,7 @@ impl StreamContext {
             target_view_resolution,
             renderer,
             decoder: None,
+            display_times_ahead_count: 0,
         };
 
         this.update_reference_space();
@@ -412,6 +418,21 @@ impl StreamContext {
         let mut openxr_display_time =
             Duration::max(timestamp, vsync_time.saturating_sub(Duration::from_secs(1)));
 
+        // A valid timestamp lands near the vsync it is shown at. One far in the future (e.g. a
+        // stale stamp from a previous session) can make some runtimes block in xrEndFrame.
+        if openxr_display_time > vsync_time + MAX_DISPLAY_TIME_AHEAD {
+            if self.display_times_ahead_count == 0 {
+                warn!(
+                    "Frame timestamp is {:.1} ms after the predicted display time, using the \
+                    predicted display time instead",
+                    (openxr_display_time - vsync_time).as_secs_f64() * 1000.0
+                );
+            }
+            self.display_times_ahead_count += 1;
+
+            openxr_display_time = vsync_time;
+        }
+
         // (shinyquagsire23) I don't entirely trust runtimes to implement CompositionLayerProjectionView
         // correctly, but if we do trust them, avoid doing rotation ourselves. Otherwise, rerender.
         // Ex: YVR/PFDMR has issues with aspect ratio mismatches and passthrough compositing.
@@ -523,6 +544,14 @@ impl Drop for StreamContext {
     fn drop(&mut self) {
         self.input_thread_running.set(false);
         self.input_thread.take().unwrap().join().ok();
+
+        if self.display_times_ahead_count > 0 {
+            info!(
+                "{} frames had a timestamp too far in the future and were shown at the predicted \
+                display time",
+                self.display_times_ahead_count
+            );
+        }
     }
 }
 
