@@ -728,3 +728,195 @@ impl ButtonMappingManager {
         destination_buttons
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn test_config() -> AutomaticButtonMappingConfig {
+        AutomaticButtonMappingConfig {
+            click_threshold: HysteresisThreshold {
+                value: 0.5,
+                deviation: 0.05,
+            },
+            touch_threshold: HysteresisThreshold {
+                value: 0.1,
+                deviation: 0.05,
+            },
+            force_threshold: 0.8,
+        }
+    }
+
+    fn short_path(id: u64) -> &'static str {
+        BUTTON_INFO
+            .get(&id)
+            .unwrap()
+            .path
+            .trim_start_matches("/user/hand/")
+    }
+
+    // Human readable list of bindings, as "source -> destination (mapping)"
+    fn binding_descriptions(
+        source_profile: u64,
+        emulation_mode: ControllersEmulationMode,
+    ) -> BTreeSet<String> {
+        let source_set = &CONTROLLER_PROFILE_INFO
+            .get(&source_profile)
+            .unwrap()
+            .button_set;
+        let destination_set = registered_button_set(&emulation_mode);
+
+        let mut descriptions = BTreeSet::new();
+        for (source, targets) in automatic_bindings(source_set, &destination_set, &test_config()) {
+            for target in targets {
+                let mapping = match target.mapping_type {
+                    ButtonMappingType::Passthrough => "passthrough".to_owned(),
+                    ButtonMappingType::HysteresisThreshold(threshold) => {
+                        format!("threshold {}", threshold.value)
+                    }
+                    ButtonMappingType::BinaryToScalar(states) => {
+                        format!("binary {}..{}", states.off, states.on)
+                    }
+                    ButtonMappingType::Remap(range) => {
+                        format!("remap {}..{}", range.min, range.max)
+                    }
+                };
+                descriptions.insert(format!(
+                    "{} -> {} ({mapping})",
+                    short_path(source),
+                    short_path(target.destination)
+                ));
+            }
+        }
+
+        descriptions
+    }
+
+    fn assert_bindings(
+        source_profile: u64,
+        emulation_mode: ControllersEmulationMode,
+        expected: &[&str],
+    ) {
+        let expected = expected
+            .iter()
+            .map(|description| description.to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            binding_descriptions(source_profile, emulation_mode),
+            expected
+        );
+    }
+
+    // Recorded before Index controller inputs were supported. Quest clients must keep these
+    #[test]
+    fn quest_to_index_bindings_are_unchanged() {
+        assert_bindings(
+            *QUEST_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ValveIndex,
+            &[
+                "left/input/menu/click -> left/input/system/click (passthrough)",
+                "left/input/squeeze/value -> left/input/squeeze/force (remap 0.8..1)",
+                "left/input/squeeze/value -> left/input/squeeze/value (remap 0..0.8)",
+                "left/input/thumbrest/touch -> left/input/trackpad/touch (passthrough)",
+                "left/input/thumbstick/click -> left/input/thumbstick/click (passthrough)",
+                "left/input/thumbstick/touch -> left/input/thumbstick/touch (passthrough)",
+                "left/input/thumbstick/x -> left/input/thumbstick/x (passthrough)",
+                "left/input/thumbstick/y -> left/input/thumbstick/y (passthrough)",
+                "left/input/trigger/touch -> left/input/trigger/touch (passthrough)",
+                "left/input/trigger/value -> left/input/trigger/click (threshold 0.5)",
+                "left/input/trigger/value -> left/input/trigger/value (passthrough)",
+                "left/input/x/click -> left/input/a/click (passthrough)",
+                "left/input/x/touch -> left/input/a/touch (passthrough)",
+                "left/input/y/click -> left/input/b/click (passthrough)",
+                "left/input/y/touch -> left/input/b/touch (passthrough)",
+                "right/input/a/click -> right/input/a/click (passthrough)",
+                "right/input/a/touch -> right/input/a/touch (passthrough)",
+                "right/input/b/click -> right/input/b/click (passthrough)",
+                "right/input/b/touch -> right/input/b/touch (passthrough)",
+                "right/input/squeeze/value -> right/input/squeeze/force (remap 0.8..1)",
+                "right/input/squeeze/value -> right/input/squeeze/value (remap 0..0.8)",
+                "right/input/system/click -> right/input/system/click (passthrough)",
+                "right/input/thumbrest/touch -> right/input/trackpad/touch (passthrough)",
+                "right/input/thumbstick/click -> right/input/thumbstick/click (passthrough)",
+                "right/input/thumbstick/touch -> right/input/thumbstick/touch (passthrough)",
+                "right/input/thumbstick/x -> right/input/thumbstick/x (passthrough)",
+                "right/input/thumbstick/y -> right/input/thumbstick/y (passthrough)",
+                "right/input/trigger/touch -> right/input/trigger/touch (passthrough)",
+                "right/input/trigger/value -> right/input/trigger/click (threshold 0.5)",
+                "right/input/trigger/value -> right/input/trigger/value (passthrough)",
+            ],
+        );
+    }
+
+    // Recorded before Index controller inputs were supported. Quest clients must keep these
+    #[test]
+    fn quest_to_quest_bindings_are_unchanged() {
+        assert_bindings(
+            *QUEST_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::Quest2Touch,
+            &[
+                "left/input/menu/click -> left/input/menu/click (passthrough)",
+                "left/input/squeeze/value -> left/input/squeeze/value (passthrough)",
+                "left/input/thumbrest/touch -> left/input/thumbrest/touch (passthrough)",
+                "left/input/thumbstick/click -> left/input/thumbstick/click (passthrough)",
+                "left/input/thumbstick/touch -> left/input/thumbstick/touch (passthrough)",
+                "left/input/thumbstick/x -> left/input/thumbstick/x (passthrough)",
+                "left/input/thumbstick/y -> left/input/thumbstick/y (passthrough)",
+                "left/input/trigger/touch -> left/input/trigger/touch (passthrough)",
+                "left/input/trigger/value -> left/input/trigger/value (passthrough)",
+                "left/input/x/click -> left/input/x/click (passthrough)",
+                "left/input/x/touch -> left/input/x/touch (passthrough)",
+                "left/input/y/click -> left/input/y/click (passthrough)",
+                "left/input/y/touch -> left/input/y/touch (passthrough)",
+                "right/input/a/click -> right/input/a/click (passthrough)",
+                "right/input/a/touch -> right/input/a/touch (passthrough)",
+                "right/input/b/click -> right/input/b/click (passthrough)",
+                "right/input/b/touch -> right/input/b/touch (passthrough)",
+                "right/input/squeeze/value -> right/input/squeeze/value (passthrough)",
+                "right/input/system/click -> right/input/system/click (passthrough)",
+                "right/input/thumbrest/touch -> right/input/thumbrest/touch (passthrough)",
+                "right/input/thumbstick/click -> right/input/thumbstick/click (passthrough)",
+                "right/input/thumbstick/touch -> right/input/thumbstick/touch (passthrough)",
+                "right/input/thumbstick/x -> right/input/thumbstick/x (passthrough)",
+                "right/input/thumbstick/y -> right/input/thumbstick/y (passthrough)",
+                "right/input/trigger/touch -> right/input/trigger/touch (passthrough)",
+                "right/input/trigger/value -> right/input/trigger/value (passthrough)",
+            ],
+        );
+    }
+
+    // Recorded before Index controller inputs were supported. Quest clients must keep these
+    #[test]
+    fn quest_to_vive_bindings_are_unchanged() {
+        assert_bindings(
+            *QUEST_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ViveWand,
+            &[
+                "left/input/menu/click -> left/input/menu/click (passthrough)",
+                "left/input/squeeze/value -> left/input/squeeze/click (threshold 0.5)",
+                "left/input/thumbrest/touch -> left/input/trackpad/touch (passthrough)",
+                "left/input/thumbstick/click -> left/input/trackpad/click (passthrough)",
+                "left/input/thumbstick/touch -> left/input/trackpad/touch (passthrough)",
+                "left/input/thumbstick/x -> left/input/trackpad/x (passthrough)",
+                "left/input/thumbstick/y -> left/input/trackpad/y (passthrough)",
+                "left/input/trigger/value -> left/input/trigger/click (threshold 0.5)",
+                "left/input/trigger/value -> left/input/trigger/value (passthrough)",
+                "left/input/x/click -> left/input/trackpad/click (passthrough)",
+                "left/input/x/touch -> left/input/trackpad/touch (passthrough)",
+                "right/input/a/click -> right/input/trackpad/click (passthrough)",
+                "right/input/a/touch -> right/input/trackpad/touch (passthrough)",
+                "right/input/squeeze/value -> right/input/squeeze/click (threshold 0.5)",
+                "right/input/system/click -> right/input/system/click (passthrough)",
+                "right/input/thumbrest/touch -> right/input/trackpad/touch (passthrough)",
+                "right/input/thumbstick/click -> right/input/trackpad/click (passthrough)",
+                "right/input/thumbstick/touch -> right/input/trackpad/touch (passthrough)",
+                "right/input/thumbstick/x -> right/input/trackpad/x (passthrough)",
+                "right/input/thumbstick/y -> right/input/trackpad/y (passthrough)",
+                "right/input/trigger/value -> right/input/trigger/click (threshold 0.5)",
+                "right/input/trigger/value -> right/input/trigger/value (passthrough)",
+            ],
+        );
+    }
+}
