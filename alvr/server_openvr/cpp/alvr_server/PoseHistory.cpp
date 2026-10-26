@@ -100,6 +100,11 @@ std::optional<PoseHistory::TrackingHistoryFrame> PoseHistory::GetLatestPose() co
     return m_poseBuffer.back();
 }
 
+void PoseHistory::Clear() {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    m_poseBuffer.clear();
+}
+
 void PoseHistory::SetTransform(const vr::HmdMatrix34_t& transform) {
     std::unique_lock<std::mutex> lock(m_mutex);
     m_transform = transform;

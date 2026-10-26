@@ -240,6 +240,8 @@ fn spawn_event_loop(events_receiver: mpsc::Receiver<ServerCoreEvent>) {
                     props::set_openvr_prop(None, device_id, prop)
                 }
                 ServerCoreEvent::ClientConnected(config) => unsafe {
+                    // Timestamps of the previous session may be in another clock
+                    HEAD_POSE_QUEUE.lock().clear();
                     FOVEATION_CENTER_QUEUE.lock().clear();
                     *EYE_TRACKED_FOVEATION.lock() = config
                         .foveated_encoding

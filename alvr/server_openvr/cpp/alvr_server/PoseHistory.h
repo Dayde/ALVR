@@ -27,6 +27,10 @@ public:
 
     void SetTransform(const vr::HmdMatrix34_t& transform);
 
+    // Drop every pose. Called when a client starts streaming: timestamps are in the client's
+    // clock, which can restart between sessions, so poses of a previous session must not match.
+    void Clear();
+
 private:
     mutable std::mutex m_mutex;
     std::list<TrackingHistoryFrame> m_poseBuffer;
