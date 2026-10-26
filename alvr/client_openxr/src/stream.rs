@@ -580,7 +580,7 @@ fn stream_input_loop(
 
         device_motions.push((*HEAD_ID, head_motion));
 
-        let left_hand_data = crate::interaction::get_hand_data(
+        let mut left_hand_data = crate::interaction::get_hand_data(
             &xr_session,
             core_ctx.platform(),
             stage_reference_space,
@@ -590,7 +590,7 @@ fn stream_input_loop(
             &mut last_controller_poses[0],
             &mut last_palm_poses[0],
         );
-        let right_hand_data = crate::interaction::get_hand_data(
+        let mut right_hand_data = crate::interaction::get_hand_data(
             &xr_session,
             core_ctx.platform(),
             stage_reference_space,
@@ -600,6 +600,17 @@ fn stream_input_loop(
             &mut last_controller_poses[1],
             &mut last_palm_poses[1],
         );
+
+        // Monado reports a hand skeleton derived from the Index controllers ("conforming" hand
+        // tracking) whenever they are tracked, which would hide the controllers below. On desktop
+        // a tracked controller wins, the streamer derives the finger poses from its buttons.
+        if core_ctx.platform() == Platform::LinuxPc {
+            for hand_data in [&mut left_hand_data, &mut right_hand_data] {
+                if hand_data.grip_motion.is_some() {
+                    hand_data.skeleton_joints = None;
+                }
+            }
+        }
 
         // Note: When multimodal input is enabled, we are sure that when free hands are used
         // (not holding controllers) the controller data is None.
