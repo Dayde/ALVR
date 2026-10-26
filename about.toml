@@ -28,3 +28,7 @@ targets = [
 ]
 workarounds = ["ring"]
 filter-noassertion = true
+
+# Bindings to FFmpeg used by the desktop Linux client, which links the system FFmpeg dynamically
+[ffmpeg-sys-next]
+accepted = ["WTFPL"]
