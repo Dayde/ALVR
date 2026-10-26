@@ -150,6 +150,20 @@ From the ALVR directory edit the ./alvr/xtask/src/dependencies.rs, and change tw
 
 You should be good to go! Refer to [Streamer Building](https://github.com/alvr-org/ALVR/wiki/Building-From-Source#streamer-building) for the commands to build ALVR
 
+# Desktop Linux Client Building
+
+The desktop Linux client (`alvr_client_linux`, see `alvr/client_linux/README.md`) decodes video with the system FFmpeg and VAAPI. On top of the streamer packages above (which include libva, also linked by the client), it needs the FFmpeg development files and clang (for bindgen):
+
+* **Debian / Ubuntu**: `sudo apt install libavcodec-dev libavutil-dev libclang-dev`
+* **Fedora** (untested): `sudo dnf install libavcodec-free-devel libavutil-free-devel clang` is enough to build. To decode, Fedora's `ffmpeg-free` lacks the H.264 and HEVC decoders that VAAPI decoding goes through, and Fedora's Mesa has H.264/HEVC VAAPI disabled: install RPM Fusion's `ffmpeg-libs` (`ffmpeg-devel` to build against it) and `mesa-va-drivers-freeworld`.
+* **Arch**: the `ffmpeg` and `clang` packages listed above
+
+```bash
+cargo build -p alvr_client_linux --release
+```
+
+Commands that build the whole workspace, like `cargo xtask clippy` or `cargo build` without `-p`, also build this client and so need these packages. `cargo xtask build-streamer` doesn't.
+
 # Android App Building
 
 ## 1. Installing necessary packages

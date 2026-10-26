@@ -240,6 +240,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "alvr_client_linux"
+version = "21.0.0-dev14"
+dependencies = [
+ "alvr_client_core",
+ "alvr_client_openxr",
+ "alvr_common",
+ "libc",
+]
+
+[[package]]
 name = "alvr_client_mock"
 version = "21.0.0-dev14"
 dependencies = [
