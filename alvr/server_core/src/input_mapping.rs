@@ -236,6 +236,14 @@ fn map_button_pair_automatic(
 
         entries.push((source_value, targets));
     }
+    if let Some(source_force) = source.force {
+        let mut targets = vec![];
+        if let Some(destination_force) = destination.force {
+            targets.push(passthrough(destination_force));
+        }
+
+        entries.push((source_force, targets));
+    }
 
     entries.into_iter()
 }
@@ -917,6 +925,36 @@ mod tests {
                 "right/input/trigger/value -> right/input/trigger/click (threshold 0.5)",
                 "right/input/trigger/value -> right/input/trigger/value (passthrough)",
             ],
+        );
+    }
+
+    #[test]
+    fn squeeze_force_is_forwarded_or_derived_from_value() {
+        let descriptions = binding_descriptions(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ValveIndex,
+        );
+        assert!(
+            descriptions
+                .contains("left/input/squeeze/force -> left/input/squeeze/force (passthrough)")
+        );
+        assert!(
+            descriptions
+                .contains("left/input/squeeze/value -> left/input/squeeze/value (passthrough)")
+        );
+
+        // Sources without force still emulate it from the end of the squeeze range
+        let descriptions = binding_descriptions(
+            *QUEST_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ValveIndex,
+        );
+        assert!(
+            descriptions
+                .contains("left/input/squeeze/value -> left/input/squeeze/force (remap 0.8..1)")
+        );
+        assert!(
+            descriptions
+                .contains("left/input/squeeze/value -> left/input/squeeze/value (remap 0..0.8)")
         );
     }
 }
