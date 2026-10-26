@@ -264,23 +264,34 @@ pub fn automatic_bindings(
         if d_set.contains(&*LEFT_MENU_CLICK_ID) {
             bindings.extend(map_button_pair_automatic(click, click, config));
         } else if d_set.contains(&*LEFT_SYSTEM_CLICK_ID) {
-            bindings.extend(map_button_pair_automatic(
-                click,
-                ct(s_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID),
-                config,
-            ));
+            let destination = ct(s_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID);
+            // Drive the system touch too, but only if the emulated controller has it
+            let destination = ButtonInputs {
+                touch: destination.touch.filter(|touch| d_set.contains(touch)),
+                ..destination
+            };
+            bindings.extend(map_button_pair_automatic(click, destination, config));
         }
     }
     if s_set.contains(&*LEFT_SYSTEM_CLICK_ID) {
-        let click = click(*LEFT_SYSTEM_CLICK_ID);
+        let source = ct(s_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID);
+        // Bind touch only if both sides have it, sources without it keep a click-only binding
+        let destination = ButtonInputs {
+            touch: source.touch.filter(|touch| d_set.contains(touch)),
+            ..source
+        };
         if d_set.contains(&*LEFT_SYSTEM_CLICK_ID) {
-            bindings.extend(map_button_pair_automatic(
-                click,
-                ct(s_set, *LEFT_SYSTEM_CLICK_ID, *LEFT_SYSTEM_TOUCH_ID),
-                config,
-            ));
+            bindings.extend(map_button_pair_automatic(source, destination, config));
         } else if d_set.contains(&*LEFT_MENU_CLICK_ID) {
-            bindings.extend(map_button_pair_automatic(click, click, config));
+            // A source without a menu button (Index) uses its system button as menu. Otherwise the
+            // menu is already bound and the system button keeps its path, which the driver shares
+            // with the menu button on SteamVR's side
+            let destination = if s_set.contains(&*LEFT_MENU_CLICK_ID) {
+                destination
+            } else {
+                click(*LEFT_MENU_CLICK_ID)
+            };
+            bindings.extend(map_button_pair_automatic(source, destination, config));
         }
     }
     if s_set.contains(&*RIGHT_MENU_CLICK_ID) {
@@ -288,23 +299,34 @@ pub fn automatic_bindings(
         if d_set.contains(&*RIGHT_MENU_CLICK_ID) {
             bindings.extend(map_button_pair_automatic(click, click, config));
         } else if d_set.contains(&*RIGHT_SYSTEM_CLICK_ID) {
-            bindings.extend(map_button_pair_automatic(
-                click,
-                ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID),
-                config,
-            ));
+            let destination = ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID);
+            // Drive the system touch too, but only if the emulated controller has it
+            let destination = ButtonInputs {
+                touch: destination.touch.filter(|touch| d_set.contains(touch)),
+                ..destination
+            };
+            bindings.extend(map_button_pair_automatic(click, destination, config));
         }
     }
     if s_set.contains(&*RIGHT_SYSTEM_CLICK_ID) {
-        let click = click(*RIGHT_SYSTEM_CLICK_ID);
+        let source = ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID);
+        // Bind touch only if both sides have it, sources without it keep a click-only binding
+        let destination = ButtonInputs {
+            touch: source.touch.filter(|touch| d_set.contains(touch)),
+            ..source
+        };
         if d_set.contains(&*RIGHT_SYSTEM_CLICK_ID) {
-            bindings.extend(map_button_pair_automatic(
-                click,
-                ct(s_set, *RIGHT_SYSTEM_CLICK_ID, *RIGHT_SYSTEM_TOUCH_ID),
-                config,
-            ));
+            bindings.extend(map_button_pair_automatic(source, destination, config));
         } else if d_set.contains(&*RIGHT_MENU_CLICK_ID) {
-            bindings.extend(map_button_pair_automatic(click, click, config));
+            // A source without a menu button (Index) uses its system button as menu. Otherwise the
+            // menu is already bound and the system button keeps its path, which the driver shares
+            // with the menu button on SteamVR's side
+            let destination = if s_set.contains(&*RIGHT_MENU_CLICK_ID) {
+                destination
+            } else {
+                click(*RIGHT_MENU_CLICK_ID)
+            };
+            bindings.extend(map_button_pair_automatic(source, destination, config));
         }
     }
 
@@ -956,5 +978,60 @@ mod tests {
             descriptions
                 .contains("left/input/squeeze/value -> left/input/squeeze/value (remap 0..0.8)")
         );
+    }
+
+    #[test]
+    fn index_system_buttons_forward_touch_and_act_as_menu() {
+        let descriptions = binding_descriptions(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::ValveIndex,
+        );
+        assert!(
+            descriptions
+                .contains("left/input/system/touch -> left/input/system/touch (passthrough)")
+        );
+        assert!(
+            !descriptions
+                .contains("left/input/system/click -> left/input/system/touch (passthrough)")
+        );
+
+        // Index has no menu button, the system button takes its place
+        let descriptions = binding_descriptions(
+            *INDEX_CONTROLLER_PROFILE_ID,
+            ControllersEmulationMode::Quest2Touch,
+        );
+        assert!(
+            descriptions.contains("left/input/system/click -> left/input/menu/click (passthrough)")
+        );
+    }
+
+    #[test]
+    fn system_touch_targets_registered_inputs_only() {
+        for profile_info in CONTROLLER_PROFILE_INFO.values() {
+            for emulation_mode in [
+                ControllersEmulationMode::Quest2Touch,
+                ControllersEmulationMode::Pico4,
+                ControllersEmulationMode::PSVR2Sense,
+                ControllersEmulationMode::ValveIndex,
+                ControllersEmulationMode::ViveWand,
+            ] {
+                let destination_set = registered_button_set(&emulation_mode);
+                let bindings =
+                    automatic_bindings(&profile_info.button_set, &destination_set, &test_config());
+
+                for target in bindings.values().flatten() {
+                    if target.destination == *LEFT_SYSTEM_TOUCH_ID
+                        || target.destination == *RIGHT_SYSTEM_TOUCH_ID
+                    {
+                        assert!(
+                            destination_set.contains(&target.destination),
+                            "{} binds unregistered {}",
+                            profile_info.path,
+                            BUTTON_INFO.get(&target.destination).unwrap().path
+                        );
+                    }
+                }
+            }
+        }
     }
 }
