@@ -182,6 +182,18 @@ Real hardware, by me (Dayde), on the **v20.14.1-based fork** this was ported fro
 | capability probe in the sandbox (no `/dev/dri`) | probe fails, conservative capabilities: `Cannot query the VAAPI decoder, AV1 and 10 bit are not advertised: Cannot open VAAPI device (default): Generic error in an external library`, logged before `xrCreateSession`; the client continues to the lobby |
 | Monado smoke test (no GPU, branch binary) | see below |
 
+Re-verified on 2026-10-28 at the final head `893304d2` (still based on the current `upstream/master` `adaa16ba`), on Debian 12 in WSL2 (Rust 1.97.1, FFmpeg 5.1 dev packages: libavcodec 59, libavutil 57):
+
+| Check | Result |
+| --- | --- |
+| per commit (all 7): `cargo fmt --all -- --check` + `cargo clippy --all-targets -- -D warnings` on graphics/client_core/client_openxr(/client_linux); also with `--features alvr_client_core/vaapi` from commit 3 on | pass |
+| `cargo clippy --workspace --all-targets --exclude alvr_server_openvr -- -D warnings` (`server_openvr` needs `prepare-deps`) | pass |
+| `cargo test` on graphics/client_core/client_openxr/client_linux/session with `vaapi` | pass (client_core 6, graphics 7 + 3 ignored, session 4) |
+| `cargo build -p alvr_client_linux` | pass, links `libavcodec.so.59`/`libavutil.so.57`/`libva.so.2`: FFmpeg 5.1 builds too |
+| `XR_RUNTIME_JSON=/nonexistent alvr_client_linux` without a loader installed | `Cannot load the OpenXR loader libopenxr_loader.so.1: ...`, exit 1, no panic |
+| `cargo xtask build-client` (CI's `check-android` setup: NDK r26b, platform 32, cargo-apk) on this branch and on master | both build `alvr_client_android.apk` |
+| `cargo clippy -p alvr_client_openxr --target aarch64-linux-android` on this branch and on master | 16 warnings on both, none new |
+
 **Monado smoke test**, full report in `docs/upstream-drafts/linux-client-smoke-test.md` (Dayde/ALVR branch `upstream/drafts`). Setup: Ubuntu 24.04 `monado-service` 21.0.0 + loader 1.0.20, lavapipe, simulated HMD, no controllers, no streamer. With the branch binary and no shim:
 
 - The 1.0 fallback triggers (`The OpenXR runtime does not support OpenXR 1.1.36, using 1.0.34`).
@@ -194,7 +206,7 @@ Not tested:
 
 - The master port on real hardware: VAAPI decode, real dma-bufs from a GPU, Intel CCS modifiers, P010/10-bit, AV1, chroma siting on real content, and the capability probe on a real driver (only its failure path ran here).
 - Streaming end to end: there was no streamer in the sandbox.
-- `cargo xtask build-client` (cargo-apk + NDK): the NDK is not downloadable in the sandbox. Android code paths are unchanged apart from commit 1's `Result`/`Option` plumbing.
+- The Android APK on a headset. It builds (see the re-verification above), and Android code paths are unchanged apart from commit 1's `Result`/`Option` plumbing.
 - MSVC Windows and macOS (CI will run them).
 - NVIDIA (nvidia-vaapi-driver), Intel.
 
