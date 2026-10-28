@@ -93,6 +93,11 @@ Run in a worktree on `adaa16ba` + this commit, `CARGO_TARGET_DIR` shared, `CARGO
   nothing; (c) new-session poses then match, newest wins on ties; (d) without `Clear()`, once one
   new-session pose is present the 250 ms window already excludes the stale entries. All passed.
 
+Re-verified on 2026-10-28 against `adaa16ba` + this commit, on WSL Debian 12 (Rust 1.97.1,
+clang-format 18.1.8 as on CI), with the same steps as the Linux CI job: `cargo xtask prepare-deps --platform linux --no-nvidia`,
+`cargo xtask format` then `git status` — clean; `cargo xtask clippy --ci` — pass; `cargo build -p alvr_server_openvr` — pass
+(pre-existing C++ warnings only, none in touched files); `cargo test -p alvr_server_openvr -p alvr_server_core -p alvr_session` — pass.
+
 Not tested: a live reconnect against a headset with this rebased branch (the original freeze was seen
 on the v20.14.1-based fork, which lacked #3368).
 
