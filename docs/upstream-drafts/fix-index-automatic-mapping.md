@@ -113,4 +113,4 @@ The tests are about 450 lines and overlap somewhat (the exact-set Vive tests and
 
 - [ ] This PR respects our AI policy: I completely understand and "own" the coding decisions made, and can discuss them without relying on AI copy-pasted responses.
 - [ ] This PR's description contains a human-written summary of the content of the code.
-- [ ] Testing: ...
+- [ ] Testing: new unit tests in `input_mapping.rs` (Quest bindings locked against master), `cargo xtask clippy --ci`, `cargo build -p alvr_server_openvr`; no runtime test with SteamVR (see Testing).
