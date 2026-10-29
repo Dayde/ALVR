@@ -7,6 +7,7 @@ human-written summary, so write that part yourself before opening the PR.
 | Draft | Branch |
 |---|---|
 | [fix-stream-config-timeout.md](fix-stream-config-timeout.md) | `upstream/fix-stream-config-timeout` |
+| [fix-streamer-audio-handshake.md](fix-streamer-audio-handshake.md) | `upstream/fix-streamer-audio-handshake` |
 | [fix-display-time-ahead.md](fix-display-time-ahead.md) | `upstream/fix-display-time-ahead` |
 | [fix-pose-history-reconnect.md](fix-pose-history-reconnect.md) | `upstream/fix-pose-history-reconnect` |
 | [fix-index-automatic-mapping.md](fix-index-automatic-mapping.md) | `upstream/fix-index-automatic-mapping` |
