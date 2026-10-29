@@ -1,4 +1,4 @@
-# fix(client_openxr): don't submit display times far in the future
+# fix(client_openxr): clamp far-future display times
 
 Branch: `Dayde:upstream/fix-display-time-ahead` (base `alvr-org/ALVR` `master` @ `adaa16ba`)
 Companion PR (streamer side, removes the cause): `Dayde:upstream/fix-pose-history-reconnect` — link: <!-- TODO(Dayde): link the other PR once opened -->
