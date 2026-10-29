@@ -26,16 +26,16 @@ Everything new is behind `cfg(target_os = "linux")` (or `Platform::LinuxPc` at r
 
 Commits. Each one passes `cargo fmt --check` and `cargo clippy --all-targets` on `alvr_graphics`, `alvr_client_core` and `alvr_client_openxr` (plus `alvr_client_linux` once it exists). From commit 3 on, it also passes with `--features alvr_client_core/vaapi`.
 
-1. **`feat(client_openxr, graphics): return errors from entry_point and add request_exit`**: shared-crate hardening, useful on its own.
+1. **`feat(client_openxr): make entry_point fallible`**: shared-crate hardening, useful on its own.
    - `entry_point()` returns `Result<()>`. Missing loader or runtime, a missing `XR_KHR_opengl_es_enable`, no headset, and session or instance creation failures become errors with context. The Android entry points `.unwrap()` them, so they still panic, now with a message.
    - `request_exit()` (an atomic flag, safe in a signal handler) makes the frame loop call `xrRequestExitSession` and return from `entry_point()`.
    - `alvr_graphics`: `eglGetNativeClientBufferANDROID` is now an `Option`. Before, a null pointer was transmuted into a function pointer outside Android.
-2. **`feat(graphics): import dma-buf NV12/P010 frames on Linux`**: new `alvr_graphics::dmabuf` module (Linux only).
+2. **`feat(graphics): import NV12/P010 dma-bufs on Linux`**: new `alvr_graphics::dmabuf` module (Linux only).
    - Luma and chroma are imported as two `EGL_LINUX_DMA_BUF_EXT` images (R8/GR88 or R16/GR1616) and bound as `GL_TEXTURE_2D`. wgpu creates a *desktop* GL context on Linux, and that context cannot sample multi-planar external images.
    - Each image takes up to 4 dma-buf planes, so the auxiliary planes of compressed modifiers (Intel CCS) stay with their image.
    - A Linux staging shader converts YUV to RGB with the frame's colour space (BT.601/709/2020), range and bit depth. It also offsets the chroma coordinates to the stream's chroma sample location (left-sited by default for H.264/HEVC).
    - The EGL/GL extensions are queried once (`check_dmabuf_import_support()`). An import failure returns an error, which is logged at most every 5 s, instead of `check_error()` → `abort()`. GL errors left by other users of the context are cleared before the import, at most 16 per frame.
-3. **`feat(client_core): add a VAAPI video decoder for desktop Linux`**: `video_decoder/linux.rs`, using FFmpeg through `ffmpeg-sys-next` 8.1, behind a new non-default `vaapi` feature.
+3. **`feat(client_core): add a VAAPI decoder for Linux`**: `video_decoder/linux.rs`, using FFmpeg through `ffmpeg-sys-next` 8.1, behind a new non-default `vaapi` feature.
    - The decoder is the first FFmpeg decoder for the codec that has a VAAPI `HW_DEVICE_CTX` hw_config. `avcodec_find_decoder(AV1)` returns `libdav1d` on distro FFmpeg, which can't use VAAPI.
    - Errors are handled like with MediaCodec:
      - a bounded packet queue: a full queue → `false` → the connection requests an IDR;
@@ -47,19 +47,19 @@ Commits. Each one passes `cargo fmt --check` and `cargo clippy --all-targets` on
    - Chroma locations reported as unspecified are rendered as left sited (see "Rendering").
    - `WTFPL` is accepted for `ffmpeg-sys-next` only, in `about.toml`.
 4. **`feat(graphics): expose eglGetProcAddress on Linux`**: opens `libEGL.so.1` (the library wgpu uses) to get the `eglGetProcAddress` that `XR_MNDX_egl_enable` needs. It is an `Option`, with no unwrap.
-5. **`feat(client_openxr): create the session through XR_MNDX_egl_enable on desktop Linux`**:
+5. **`feat(client_openxr): add an MNDX session on Linux`**:
    - Raw `xrCreateSession` with `XrGraphicsBindingEGLMNDX`; the openxr crate only binds the Android GLES binding.
    - Loads `libopenxr_loader.so.1`.
    - Fails early if dma-buf import is unsupported.
    - Advertises AV1 and 10 bit only when the startup probe confirms them. The capabilities of the other platforms are unchanged: their expressions are the same as on master, only moved under `cfg(not(target_os = "linux"))`.
    - `crate-type = ["cdylib", "rlib"]`.
    - **OpenXR 1.0 fallback, only `cfg(not(target_os = "android"))`**: if `xrCreateInstance` fails with `XR_ERROR_API_VERSION_UNSUPPORTED`, it retries with 1.0.34. This is needed for the Ubuntu 24.04 packages (loader 1.0.20, Monado 21). The client uses no OpenXR 1.1 functions. On Android, the instance is still created with a single `create_instance` call and the per-device version, so its behaviour doesn't change.
-6. **`feat(client_linux): add a desktop Linux client binary`**: the new crate.
+6. **`feat(client_linux): add a desktop Linux client`**: the new crate.
    - `SIGTERM`/`SIGINT`/`SIGHUP` handlers (installed with `sigaction`, `SA_RESTART`) call `request_exit()`. A second signal exits immediately with `_exit(1)`. A handler that cannot be installed is reported on stderr.
    - `DISPLAY`/`WAYLAND_DISPLAY` are hidden from wgpu, so EGL is surfaceless. This is process-wide (see Risks).
    - On other OSes the crate builds as a stub `main`.
    - Adds a README, `libavcodec-dev libavutil-dev` in the Linux CI job, and a "Desktop Linux Client Building" section in `wiki/Building-From-Source.md`. On Fedora (untested), decoding needs RPM Fusion's `ffmpeg-libs` and `mesa-va-drivers-freeworld`, because `ffmpeg-free` lacks the H.264/HEVC decoders that the VAAPI hwaccel goes through and Fedora's Mesa has H.264/HEVC VAAPI disabled. The wiki says so.
-7. **`feat(client_openxr): default to Lighthouse controllers on desktop Linux`**:
+7. **`feat(client_openxr): default to Index controllers`**:
    - Index profile by default (`ALVR_CONTROLLER_PROFILE=vive|quest` overrides).
    - Hand trackers off unless `ALVR_HAND_TRACKING=1`.
    - When hand tracking is on, a hand's skeleton is dropped while its controller is tracked.
@@ -182,7 +182,7 @@ Real hardware, by me (Dayde), on the **v20.14.1-based fork** this was ported fro
 | capability probe in the sandbox (no `/dev/dri`) | probe fails, conservative capabilities: `Cannot query the VAAPI decoder, AV1 and 10 bit are not advertised: Cannot open VAAPI device (default): Generic error in an external library`, logged before `xrCreateSession`; the client continues to the lobby |
 | Monado smoke test (no GPU, branch binary) | see below |
 
-Re-verified on 2026-10-28 at the final head `893304d2` (still based on the current `upstream/master` `adaa16ba`), on Debian 12 in WSL2 (Rust 1.97.1, FFmpeg 5.1 dev packages: libavcodec 59, libavutil 57):
+Re-verified on 2026-10-28 at `893304d2` (same trees as the final head `bddb14ca`, which only rewords the commit messages; still based on the current `upstream/master` `adaa16ba`), on Debian 12 in WSL2 (Rust 1.97.1, FFmpeg 5.1 dev packages: libavcodec 59, libavutil 57):
 
 | Check | Result |
 | --- | --- |
