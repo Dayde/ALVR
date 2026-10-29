@@ -1,4 +1,4 @@
-# fix(server_openvr): clear the head pose history when a client connects
+# fix(server_openvr): clear pose history on connect
 
 Branch: `Dayde:upstream/fix-pose-history-reconnect` (base `alvr-org/ALVR` `master` @ `adaa16ba`)
 Companion PR (client-side safety clamp): `Dayde:upstream/fix-display-time-ahead` — link: <!-- TODO(Dayde): link the other PR once opened -->
