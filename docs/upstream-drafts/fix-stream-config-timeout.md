@@ -17,10 +17,10 @@ On top of that, the client waits up to 15 s for the stream config, as a pragmati
 
 Commits (each builds, passes clippy and its tests on its own):
 
-1. `fix(client_core): don't block pause() on the handshake`: take `ctx.state.write()` only once the stream socket is connected, and check the lifecycle state while holding it. This fixes a pre-existing render-loop freeze of up to about 2 s on master, and must come before the longer waits.
-2. `fix(sockets): make framed_recv wait for the whole timeout`: loop until the deadline; clamp the last wait with a small RAII guard that restores the socket read timeout; report a 0-byte read (peer closed) as an error instead of spinning.
-3. `fix(sockets): keep partial packets in ProtoControlSocket between recv calls`: the buffer and cursor live in the socket, as in `ControlSocketReceiver`, and are handed over on `split()`. Needed for the stepped wait in commit 4, and it also fixes a latent desync.
-4. `fix(client_core): wait up to 15 s for the stream config`: the 15 s wait, in 500 ms steps; returns early when the lifecycle leaves `Resumed`.
+1. `fix(client_core): unblock pause() during handshake`: take `ctx.state.write()` only once the stream socket is connected, and check the lifecycle state while holding it. This fixes a pre-existing render-loop freeze of up to about 2 s on master, and must come before the longer waits.
+2. `fix(sockets): wait full timeout in framed_recv`: loop until the deadline; clamp the last wait with a small RAII guard that restores the socket read timeout; report a 0-byte read (peer closed) as an error instead of spinning.
+3. `fix(sockets): keep partial packets across recv()`: the buffer and cursor live in the socket, as in `ControlSocketReceiver`, and are handed over on `split()`. Needed for the stepped wait in commit 4, and it also fixes a latent desync.
+4. `fix(client_core): allow 15 s for the stream config`: the 15 s wait, in 500 ms steps; returns early when the lifecycle leaves `Resumed`.
 
 **Splitting:** commit 1 (pause) only relies on the lifecycle re-check under the lock and works on its own on master. If maintainers prefer, it can be split into its own PR, so that a discussion about the 15 s value does not hold up the lock and socket fixes (commits 1-3 are useful without commit 4).
 
