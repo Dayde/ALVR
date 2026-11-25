@@ -20,7 +20,7 @@ don't need to be on: Monado starts with a stand-in for each one and connects it 
 | `systemd/alvr-client.service` | Runs the client once Monado is ready (waits for `$XDG_RUNTIME_DIR/alvr-monado-ready`). Restarts it 1 s after it exits |
 | `wait-for-beyond.sh` | Waits up to 60 s for the Beyond (USB `35bd:0101`) to enumerate before Monado starts |
 | `run-monado-service.sh` | Starts `monado-service` and reads its log: writes the ready flag on "Started vblank event thread!", and exits (so systemd restarts Monado) on `VK_ERROR_DEVICE_LOST` or vblank errors. A tracker that turns on after discovery is only logged (see "Restarting Monado") |
-| `run-alvr-client-service.sh` | Runs the client with the Monado runtime and logs to `logs/client-<time>.log` |
+| `run-alvr-client-service.sh` | Runs the client in `~/b3w1/current` (falling back to the build tree) with the Monado runtime, and logs to `logs/client-<time>.log` |
 | `launch-alvr-client.sh` | Manual one-click launcher: starts Monado through Envision if it isn't running, then the client in a terminal |
 | `alvr-client.desktop` | Menu entry for `launch-alvr-client.sh` |
 | `plasmoid/org.dayde.alvrtoggle` | KDE Plasma panel widget that starts and stops `alvr-client.service` and shows its state. It waits for systemd's change signals instead of polling |
@@ -28,8 +28,8 @@ don't need to be on: Monado starts with a stand-in for each one and connects it 
 | `system/10-power-key.conf` | logind drop-in: the power button powers off even when KDE holds an inhibitor. The services then stop in order: client, then Monado |
 | `monado/*.patch` | Changes to Monado this setup relies on, see below |
 
-The scripts expect this layout: the client checkout in `~/claude-remote/alvr-client/src`, these
-scripts in `~/claude-remote/alvr-client`, and a Monado
+The scripts expect this layout: the client binary in `~/b3w1/current` (or the client checkout in
+`~/claude-remote/alvr-client/src`), these scripts in `~/claude-remote/alvr-client`, and a Monado
 built from [Envision](https://gitlab.com/gabmus/envision)'s checkout with the patches below,
 installed in the `lighthouse_b3w1` prefix (`~/.local/share/envision/prefixes/lighthouse_b3w1`).
 Adjust the paths if yours differ.

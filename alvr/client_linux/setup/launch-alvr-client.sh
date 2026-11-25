@@ -3,7 +3,8 @@
 # Starts Monado through Envision if it isn't running, then runs the client and logs its output.
 
 CLIENT_DIR="$HOME/claude-remote/alvr-client"
-CLIENT_BIN="$CLIENT_DIR/src/target/release/alvr_client_linux"
+CLIENT_BIN="$HOME/b3w1/current/alvr_client_linux"
+[ -x "$CLIENT_BIN" ] || CLIENT_BIN="$CLIENT_DIR/src/target/release/alvr_client_linux"
 LOG_DIR="$CLIENT_DIR/logs"
 LOG_FILE="$LOG_DIR/client-$(date +%Y%m%d-%H%M%S).log"
 MONADO_SOCKET="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/monado_comp_ipc"
