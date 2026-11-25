@@ -23,13 +23,10 @@ while IFS= read -r line; do
             kill -KILL $pid 2>/dev/null
             exit 1 ;;
         *"Cannot add device after setup"*)
-            # A controller or tracker turned on after Monado's discovery window: Monado can't add
-            # it later, so restart to pick it up
-            echo "alvr-monado: new tracked device, restarting Monado to add it"
-            kill -TERM $pid
-            for _ in $(seq 1 50); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
-            kill -KILL $pid 2>/dev/null
-            exit 1 ;;
+            # A tracker (or a third controller) turned on after setup. Hand controllers connect to
+            # their stand-in instead (patch 0003). Monado can't add other devices later, and since
+            # the 2026-11-25 system upgrade a restarted Monado loses the display, so keep running.
+            echo "alvr-monado: a device turned on after setup and is ignored until the next reboot" ;;
     esac
 done < "$fifo"
 wait $pid

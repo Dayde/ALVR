@@ -10,9 +10,10 @@ PartOf=graphical-session.target
 [Service]
 # Wait until Monado has found the devices and set up the Beyond's display (flag written by
 # run-monado-service.sh)
-# (gives up after 60 s and starts anyway; the client's own no-frame watchdog takes over)
-ExecStartPre=/bin/sh -c 'for i in $(seq 1 120); do [ -e "$XDG_RUNTIME_DIR/alvr-monado-ready" ] && exit 0; sleep 0.5; done; exit 0'
-TimeoutStartSec=120
+# (no time limit: Monado is ready a few seconds after the Beyond is on, but wait-for-beyond.sh
+# can hold it back)
+ExecStartPre=/bin/sh -c 'until [ -e "$XDG_RUNTIME_DIR/alvr-monado-ready" ]; do sleep 0.5; done'
+TimeoutStartSec=infinity
 ExecStart=%h/claude-remote/alvr-client/run-alvr-client-service.sh
 KillMode=mixed
 TimeoutStopSec=10

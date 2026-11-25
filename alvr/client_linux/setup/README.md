@@ -9,16 +9,17 @@ Bigscreen Beyond <- DisplayPort/USB -- Monado (monado-service) <- OpenXR -- alvr
 ```
 
 At login, systemd starts Monado once the headset is on USB, then starts the client once Monado has
-set up the headset display. Both restart on their own when something goes wrong.
+set up the headset display. Both restart on their own when something goes wrong. The controllers
+don't need to be on: Monado starts with a stand-in for each one and connects it when it turns on.
 
 ## Files
 
 | File | What it does |
 |---|---|
 | `systemd/alvr-monado.service` | Runs Monado with the settings below. Wants `alvr-client.service`, so the client (re)starts with it |
-| `systemd/alvr-client.service` | Runs the client once Monado is ready (waits for `$XDG_RUNTIME_DIR/alvr-monado-ready`, up to 60 s). Restarts it 1 s after it exits |
+| `systemd/alvr-client.service` | Runs the client once Monado is ready (waits for `$XDG_RUNTIME_DIR/alvr-monado-ready`). Restarts it 1 s after it exits |
 | `wait-for-beyond.sh` | Waits up to 60 s for the Beyond (USB `35bd:0101`) to enumerate before Monado starts |
-| `run-monado-service.sh` | Starts `monado-service` and reads its log: writes the ready flag on "Started vblank event thread!", and exits (so systemd restarts Monado) on `VK_ERROR_DEVICE_LOST`, vblank errors, or a controller/tracker that turned on after discovery |
+| `run-monado-service.sh` | Starts `monado-service` and reads its log: writes the ready flag on "Started vblank event thread!", and exits (so systemd restarts Monado) on `VK_ERROR_DEVICE_LOST` or vblank errors. A tracker that turns on after discovery is only logged (see "Restarting Monado") |
 | `run-alvr-client-service.sh` | Runs the client with the Monado runtime and logs to `logs/client-<time>.log` |
 | `launch-alvr-client.sh` | Manual one-click launcher: starts Monado through Envision if it isn't running, then the client in a terminal |
 | `alvr-client.desktop` | Menu entry for `launch-alvr-client.sh` |
@@ -28,9 +29,10 @@ set up the headset display. Both restart on their own when something goes wrong.
 | `monado/*.patch` | Changes to Monado this setup relies on, see below |
 
 The scripts expect this layout: the client checkout in `~/claude-remote/alvr-client/src`, these
-scripts in `~/claude-remote/alvr-client`, and a Monado build installed by
-[Envision](https://gitlab.com/gabmus/envision) in the `lighthouse_default` prefix
-(`~/.local/share/envision/prefixes/lighthouse_default`). Adjust the paths if yours differ.
+scripts in `~/claude-remote/alvr-client`, and a Monado
+built from [Envision](https://gitlab.com/gabmus/envision)'s checkout with the patches below,
+installed in the `lighthouse_b3w1` prefix (`~/.local/share/envision/prefixes/lighthouse_b3w1`).
+Adjust the paths if yours differ.
 
 ## Monado settings
 
@@ -44,14 +46,23 @@ profile, plus a few for this setup):
 | `U_PACING_COMP_MIN_TIME_MS=8` | The default compositor time budget is too short for the 780M: Monado presents every other vblank (45 fps) |
 | `XRT_COMPOSITOR_SCALE_PERCENTAGE=100` | Above 100 the 780M can't keep 90 fps |
 | `IPC_EXIT_ON_DISCONNECT=off` | Keep Monado running when the client restarts |
-| `LH_EXPECTED_CONTROLLERS=2`, `LH_DISCOVER_WAIT_MS=20000` | End device discovery once the headset and 2 controllers are set up, 20 s at most (needs patch 0002) |
+| `LH_PLACEHOLDER_CONTROLLERS=1` | End device discovery as soon as the headset is set up, with a stand-in for each controller that isn't on yet (needs patch 0003) |
+| `LH_DISCOVER_WAIT_MS=20000` | Give up waiting for the headset after 20 s |
 
 `monado-service` exits when its stdin closes, so the wrapper gives it a pipe that stays open.
 
 ## Monado patches
 
-Apply to Envision's Monado checkout (`~/.local/share/envision/monado`) with `git apply`, then
-rebuild from Envision.
+Apply to Envision's Monado checkout (`~/.local/share/envision/monado`) with `git apply`, in order.
+Build and install them into their own prefix rather than from Envision, which pulls upstream first
+and installs over `lighthouse_default`:
+
+```
+cd ~/.local/share/envision/monado
+cmake --build build
+cp -a --reflink=auto ../prefixes/lighthouse_default ../prefixes/lighthouse_b3w1   # first time only
+cmake --install build --prefix ~/.local/share/envision/prefixes/lighthouse_b3w1
+```
 
 - `0001`: skips the first 90 presents before registering for vblank events. Registering before the
   first modeset on the leased connector has landed fails in amdgpu ("dc_stream_state is NULL") and
@@ -60,6 +71,18 @@ rebuild from Envision.
   controllers or trackers are set up, instead of always waiting `LH_DISCOVER_WAIT_MS`. Base
   stations found after discovery are logged as info instead of the "Cannot add device" warning
   (they're never added as devices anyway).
+- `0003`: `LH_PLACEHOLDER_CONTROLLERS` ends discovery as soon as the headset is set up and adds a
+  stand-in Index controller for each hand that has none. Monado's device list is fixed once it
+  starts, so a controller that turns on later can't be added to it; instead it is set up as usual
+  and connected to its hand's stand-in, which then passes its poses, inputs, haptics, battery and
+  hand tracking through. Before that the stand-in reports no pose, like a controller that is off.
+
+## Restarting Monado
+
+Since the system upgrade of 2026-11-25 (KWin 6.8.3, Mesa 26.3.1, kernel 7.3.6), a Monado started
+again in the same desktop session gets the Beyond's display lease from KWin, but Vulkan reports no
+surface formats for it and Monado crashes. Only the first start after login works, so reboot (or
+log out and in) instead of restarting `alvr-monado.service`. Restarting only the client is fine.
 
 ## Install
 

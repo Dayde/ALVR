@@ -9,8 +9,12 @@ Wants=alvr-client.service
 [Service]
 # Same settings Envision passes (lighthouse-default profile + global env vars)
 # Patched Monado build (vblank race fix, early end of discovery with LH_EXPECTED_CONTROLLERS), see ~/.local/share/envision/monado git diff
-Environment=MONADO_BIN=%h/.local/share/envision/prefixes/lighthouse_default/bin/monado-service LD_LIBRARY_PATH=%h/.local/share/envision/prefixes/lighthouse_default/lib
-Environment=STEAMVR_LH_ENABLE=true XRT_COMPOSITOR_COMPUTE=1 U_PACING_COMP_MIN_TIME_MS=8 XRT_COMPOSITOR_SCALE_PERCENTAGE=100 IPC_EXIT_ON_DISCONNECT=off LH_EXPECTED_CONTROLLERS=2 LH_DISCOVER_WAIT_MS=20000
+# Monado build with the B3-W1 stand-in controller patch, in its own prefix (lighthouse_default is the
+# build before it). Discovery ends as soon as the Beyond is set up; a hand whose controller is not on yet
+# gets a stand-in, and the controller is connected to it when it turns on. LH_DISCOVER_WAIT_MS only
+# caps the wait for the Beyond.
+Environment=MONADO_BIN=%h/.local/share/envision/prefixes/lighthouse_b3w1/bin/monado-service LD_LIBRARY_PATH=%h/.local/share/envision/prefixes/lighthouse_b3w1/lib
+Environment=STEAMVR_LH_ENABLE=true XRT_COMPOSITOR_COMPUTE=1 U_PACING_COMP_MIN_TIME_MS=8 XRT_COMPOSITOR_SCALE_PERCENTAGE=100 IPC_EXIT_ON_DISCONNECT=off LH_PLACEHOLDER_CONTROLLERS=1 LH_DISCOVER_WAIT_MS=20000
 ExecStartPre=/bin/rm -f %t/alvr-monado-ready
 ExecStartPre=%h/claude-remote/alvr-client/wait-for-beyond.sh
 ExecStopPost=/bin/rm -f %t/alvr-monado-ready
