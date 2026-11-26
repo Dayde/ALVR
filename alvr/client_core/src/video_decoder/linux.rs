@@ -59,8 +59,11 @@ unsafe extern "C" {
 const EXTRA_HARDWARE_FRAMES: c_int = 4;
 const MAX_QUEUED_FRAMES: usize = 2;
 // Packets waiting for the decoder thread. When full, the sink rejects packets, which makes the
-// connection request an IDR (like when MediaCodec has no free input buffer).
-const MAX_QUEUED_PACKETS: usize = 4;
+// connection request an IDR (like when MediaCodec has no free input buffer). Every packet after a
+// rejected one is decoded against a missing reference, which VAAPI shows as black until the IDR
+// arrives, so the queue absorbs a stall of about a third of a second at 90 fps first. Decoded
+// frames are still dropped when they pile up, so a burst doesn't add latency once it is decoded.
+const MAX_QUEUED_PACKETS: usize = 30;
 // Packets rejected in a row by the decoder before giving up and restarting the connection. Single
 // rejections (corrupt packets) are recovered by requesting an IDR. 90 is about one second at 90
 // fps, since every packet reaches the decoder (with the default avoid_video_glitching off).
