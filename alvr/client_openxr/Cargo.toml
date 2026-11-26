@@ -20,6 +20,9 @@ alvr_system_info.workspace = true
 jni = "0.22"
 openxr = "0.21"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "android")'.dependencies]
 # Pinning android-activity to 0.6.0. v0.6.1 changed ndk-context initialization from Activity to
 # Application Context. Some unidentified dependency still assumes Activity context, causing freezes.

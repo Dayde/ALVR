@@ -33,7 +33,7 @@ use std::{
     rc::Rc,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     },
     thread,
     time::Duration,
@@ -41,6 +41,67 @@ use std::{
 use stream::StreamContext;
 
 static EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+// Frames handed to xrEndFrame, counted by the frame watchdog
+static FRAMES_SUBMITTED: AtomicU64 = AtomicU64::new(0);
+// Display time of the last submitted frame minus the runtime's predicted display time, in ns
+static LAST_DISPLAY_OFFSET_NS: AtomicI64 = AtomicI64::new(0);
+
+// If the runtime started badly (headset display not set up yet), the session can stay idle or
+// xrWaitFrame can block forever: no frames, black headset. Exit with an error so that the service
+// manager restarts the client. Once frames have been flowing, a shorter stall is enough.
+#[cfg(target_os = "linux")]
+fn spawn_frame_watchdog() {
+    const STARTUP_TIMEOUT_SECS: u32 = 8;
+    const RUNNING_TIMEOUT_SECS: u32 = 4;
+
+    thread::spawn(|| {
+        let mut last_count = 0;
+        let mut stalled_secs = 0;
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            let count = FRAMES_SUBMITTED.load(Ordering::Relaxed);
+            if count != last_count || EXIT_REQUESTED.load(Ordering::Relaxed) {
+                last_count = count;
+                stalled_secs = 0;
+                continue;
+            }
+
+            stalled_secs += 1;
+            let timeout = if count == 0 {
+                STARTUP_TIMEOUT_SECS
+            } else {
+                RUNNING_TIMEOUT_SECS
+            };
+            if stalled_secs >= timeout {
+                error!(
+                    "No frame submitted for {timeout} s ({count} before, last display time \
+                    {:+.1} ms from predicted), exiting so that the client is restarted",
+                    LAST_DISPLAY_OFFSET_NS.load(Ordering::Relaxed) as f64 / 1e6
+                );
+                dump_thread_stacks();
+                std::process::exit(1);
+            }
+        }
+    });
+}
+
+// Prints every thread's stack to the log with eu-stack (elfutils), to show where the frame loop is
+// stuck. Does nothing more than log an error if eu-stack is missing.
+#[cfg(target_os = "linux")]
+fn dump_thread_stacks() {
+    // With Yama ptrace_scope=1 a child process can't attach to its parent unless allowed to
+    unsafe {
+        libc::prctl(libc::PR_SET_PTRACER, libc::PR_SET_PTRACER_ANY);
+    }
+    let pid = std::process::id().to_string();
+    if let Err(e) = std::process::Command::new("eu-stack")
+        .args(["-p", &pid])
+        .status()
+    {
+        error!("Cannot run eu-stack to print the thread stacks: {e}");
+    }
+}
 
 fn from_xr_vec3(v: xr::Vector3f) -> Vec3 {
     Vec3::new(v.x, v.y, v.z)
@@ -185,6 +246,9 @@ pub fn request_exit() {
 /// if the OpenXR runtime is not available or cannot be used.
 pub fn entry_point() -> Result<()> {
     alvr_client_core::init_logging();
+
+    #[cfg(target_os = "linux")]
+    spawn_frame_watchdog();
 
     const LEGACY_OPENXR_VERSION: xr::Version = xr::Version::new(1, 0, 34);
     const CURRENT_OPENXR_VERSION: xr::Version = xr::Version::new(1, 1, 36);
@@ -698,6 +762,7 @@ pub fn entry_point() -> Result<()> {
                         &[],
                     )
                     .unwrap();
+                FRAMES_SUBMITTED.fetch_add(1, Ordering::Relaxed);
 
                 continue;
             }
@@ -716,12 +781,18 @@ pub fn entry_point() -> Result<()> {
                     &[&layer.build()]
                 };
 
+            LAST_DISPLAY_OFFSET_NS.store(
+                display_time.as_nanos() as i64 - vsync_time.as_nanos() as i64,
+                Ordering::Relaxed,
+            );
+
             graphics_context.make_current();
             let res = xr_frame_stream.end(
                 to_xr_time(display_time),
                 xr::EnvironmentBlendMode::OPAQUE,
                 layers,
             );
+            FRAMES_SUBMITTED.fetch_add(1, Ordering::Relaxed);
 
             if let Err(e) = res {
                 let time = to_xr_time(display_time);
